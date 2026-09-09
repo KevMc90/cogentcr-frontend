@@ -591,6 +591,57 @@ function ZoneHeader({ title }) {
 }
 
 // ── EVIDENCE ZONE ──────────────────────────────────────────────────────────────
+/**
+ * A comparison object from the engine is keyed by SIDE, not by measure:
+ *   { current: {joint: val}, prior: {joint: val}, change: {joint: val} }
+ * Flatten it to one row per measure so a table can render it. Rows are driven by
+ * `current` (what the note shows now), with any measure that exists only in
+ * `prior` appended so a dropped measurement is visible rather than silently gone.
+ */
+function comparisonRows(cmp) {
+  if (!cmp || typeof cmp !== "object") return [];
+  const current = cmp.current && typeof cmp.current === "object" ? cmp.current : {};
+  const prior   = cmp.prior   && typeof cmp.prior   === "object" ? cmp.prior   : {};
+  const change  = cmp.change  && typeof cmp.change  === "object" ? cmp.change  : {};
+  // Prior-only keys must be matched the same normalized way, or a casing variant
+  // of a measure already in `current` gets appended as a duplicate row.
+  const keys = [
+    ...Object.keys(current),
+    ...Object.keys(prior).filter(k => valueFor(current, k) === undefined),
+  ];
+  return keys.map(key => ({
+    key,
+    current: current[key],
+    prior:   valueFor(prior, key),
+    change:  valueFor(change, key),
+  }));
+}
+
+/** Case- and whitespace-insensitive key lookup — extraction's key casing varies between calls. */
+function valueFor(obj, key) {
+  if (!obj || typeof obj !== "object") return undefined;
+  if (Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
+  const norm = s => String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim();
+  const target = norm(key);
+  for (const [k, v] of Object.entries(obj)) if (norm(k) === target) return v;
+  return undefined;
+}
+
+/** "4+/5" → 4.5, "4-/5" → 3.5, "4/5" → 4. Matches the engine's avgMMT convention. */
+function mmtGradeNum(g) {
+  const m = String(g == null ? "" : g).match(/(\d+)([+-]?)/);
+  if (!m) return null;
+  return parseFloat(m[1]) + (m[2] === "+" ? 0.5 : m[2] === "-" ? -0.5 : 0);
+}
+
+/** "LEFS 36/80" → 36, "36/80" → 36, 36 → 36. Numerator only. */
+function scoreNum(v) {
+  if (v == null) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const m = String(v).match(/(-?\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : null;
+}
+
 function EvidenceZone({ kase, onToggleDocs, showDocs }) {
   const [inlineDocs, setInlineDocs]       = React.useState(kase.documents || []);
   const [inlineDocsReady, setInlineDo]    = React.useState(false);
@@ -624,9 +675,15 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
   const rec         = kase.contract.recommendation;
   const hasROM      = ex.rom && Object.keys(ex.rom).length > 0;
   const hasMMT      = ex.mmt && Object.keys(ex.mmt).length > 0;
-  const hasROMComp  = ex.romComparison && Object.keys(ex.romComparison).length > 0;
-  const hasMMTComp  = ex.mmtComparison && Object.keys(ex.mmtComparison).length > 0;
-  const hasOutComp  = !!ex.outcomeComparison;
+  // Guard on actual rows, not on the wrapper's key count — a comparison object
+  // always has current/prior/change keys, so the old check passed even when every
+  // one of them was empty and the table rendered nothing but headers.
+  const romCompRows = comparisonRows(ex.romComparison);
+  const mmtCompRows = comparisonRows(ex.mmtComparison);
+  const hasROMComp  = romCompRows.length > 0;
+  const hasMMTComp  = mmtCompRows.length > 0;
+  const hasOutComp  = !!(ex.outcomeComparison &&
+                        (ex.outcomeComparison.current != null || ex.outcomeComparison.prior != null));
   const hasProgress = hasROMComp || hasMMTComp || hasOutComp || !!ex.painPrior;
   const isOT        = kase.discipline === "OT";
   const isST        = kase.discipline === "ST";
@@ -878,17 +935,19 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {Object.entries(ex.romComparison).map(([joint, v]) => {
-                      const delta = typeof v.current === "number" && typeof v.prior === "number" ? v.current - v.prior : null;
+                    {romCompRows.map(({ key: joint, prior, current, change }) => {
+                      const delta = change != null ? change
+                        : (typeof current === "number" && typeof prior === "number" ? current - prior : null);
+                      const normal = ex.romNormals ? valueFor(ex.romNormals, joint) : undefined;
                       return (
                         <tr key={joint} style={{ borderBottom: "1px solid #f1f5f9" }}>
                           <td style={{ padding: "4px 6px", color: "#374151", fontFamily: FONTS.body }}>{joint}</td>
-                          <td style={{ padding: "4px 6px", color: "#6b7280", fontFamily: FONTS.body }}>{typeof v.prior === "number" ? `${v.prior}°` : v.prior}</td>
-                          <td style={{ padding: "4px 6px", fontWeight: 600, color: "#1e293b", fontFamily: FONTS.body }}>{typeof v.current === "number" ? `${v.current}°` : v.current}</td>
+                          <td style={{ padding: "4px 6px", color: "#6b7280", fontFamily: FONTS.body }}>{prior == null ? "—" : (typeof prior === "number" ? `${prior}°` : prior)}</td>
+                          <td style={{ padding: "4px 6px", fontWeight: 600, color: "#1e293b", fontFamily: FONTS.body }}>{current == null ? "—" : (typeof current === "number" ? `${current}°` : current)}</td>
                           <td style={{ padding: "4px 6px", fontWeight: 700, fontFamily: FONTS.body, color: delta > 0 ? "#15803d" : delta < 0 ? "#dc2626" : "#6b7280" }}>
-                            {delta !== null ? (delta > 0 ? `+${delta}°` : `${delta}°`) : "—"}
+                            {delta != null ? (delta > 0 ? `+${delta}°` : `${delta}°`) : "—"}
                           </td>
-                          <td style={{ padding: "4px 6px", color: "#9ca3af", fontFamily: FONTS.body }}>{v.normal != null ? `${v.normal}°` : "—"}</td>
+                          <td style={{ padding: "4px 6px", color: "#9ca3af", fontFamily: FONTS.body }}>{normal != null ? `${normal}°` : "—"}</td>
                         </tr>
                       );
                     })}
@@ -909,13 +968,18 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {Object.entries(ex.mmtComparison).map(([muscle, v]) => (
-                      <tr key={muscle} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                        <td style={{ padding: "4px 6px", color: "#374151", fontFamily: FONTS.body }}>{muscle}</td>
-                        <td style={{ padding: "4px 6px", color: "#6b7280", fontFamily: "monospace" }}>{v.prior}</td>
-                        <td style={{ padding: "4px 6px", fontWeight: 600, fontFamily: "monospace", color: parseFloat(v.current) >= parseFloat(v.prior) ? "#15803d" : "#dc2626" }}>{v.current}</td>
-                      </tr>
-                    ))}
+                    {mmtCompRows.map(({ key: muscle, prior, current }) => {
+                      // Grade convention matches the engine's avgMMT: "4+/5" → 4.5.
+                      const pn = mmtGradeNum(prior), cn = mmtGradeNum(current);
+                      const improved = pn != null && cn != null ? cn >= pn : null;
+                      return (
+                        <tr key={muscle} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                          <td style={{ padding: "4px 6px", color: "#374151", fontFamily: FONTS.body }}>{muscle}</td>
+                          <td style={{ padding: "4px 6px", color: "#6b7280", fontFamily: "monospace" }}>{prior == null ? "—" : prior}</td>
+                          <td style={{ padding: "4px 6px", fontWeight: 600, fontFamily: "monospace", color: improved === null ? "#1e293b" : improved ? "#15803d" : "#dc2626" }}>{current == null ? "—" : current}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -923,14 +987,26 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
 
             {hasOutComp && (
               <div>
-                <div style={{ fontSize: 10, color: "#64748b", fontFamily: FONTS.body, marginBottom: 4 }}>Outcome ({ex.outcomeComparison.tool})</div>
+                <div style={{ fontSize: 10, color: "#64748b", fontFamily: FONTS.body, marginBottom: 4 }}>Outcome</div>
                 <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#6b7280", fontFamily: FONTS.body }}>Prior: <strong>{ex.outcomeComparison.prior}/{ex.outcomeComparison.maxScore}</strong></span>
+                  {/* current/prior are full strings ("LEFS 36/80") — they already
+                      carry the tool name and the max, so no "/maxScore" suffix. */}
+                  <span style={{ fontSize: 12, color: "#6b7280", fontFamily: FONTS.body }}>Prior: <strong>{ex.outcomeComparison.prior ?? "—"}</strong></span>
                   <span style={{ fontSize: 11, color: "#9ca3af" }}>→</span>
-                  <span style={{ fontSize: 12, color: "#1e293b", fontFamily: FONTS.body }}>Current: <strong>{ex.outcomeComparison.current}/{ex.outcomeComparison.maxScore}</strong></span>
+                  <span style={{ fontSize: 12, color: "#1e293b", fontFamily: FONTS.body }}>Current: <strong>{ex.outcomeComparison.current ?? "—"}</strong></span>
                   {(() => {
-                    const d = ex.outcomeComparison.current - ex.outcomeComparison.prior;
-                    return <span style={{ fontSize: 12, fontWeight: 700, color: d > 0 ? "#15803d" : d < 0 ? "#dc2626" : "#6b7280", fontFamily: FONTS.body }}>{d > 0 ? `+${d}` : d}</span>;
+                    // Prefer the change the engine already computed; otherwise take
+                    // the numerator off each string ("LEFS 36/80" → 36) so the delta
+                    // is arithmetic, not string subtraction (which yielded NaN).
+                    const d = ex.outcomeComparison.change != null
+                      ? ex.outcomeComparison.change
+                      : (() => {
+                          const c = scoreNum(ex.outcomeComparison.current);
+                          const p = scoreNum(ex.outcomeComparison.prior);
+                          return c != null && p != null ? c - p : null;
+                        })();
+                    if (d == null || Number.isNaN(d)) return null;
+                    return <span style={{ fontSize: 12, fontWeight: 700, color: d > 0 ? "#15803d" : d < 0 ? "#dc2626" : "#6b7280", fontFamily: FONTS.body }}>({d > 0 ? `+${d}` : d})</span>;
                   })()}
                 </div>
               </div>
