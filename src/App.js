@@ -3810,6 +3810,12 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
   ];
   const completeness = Math.round(fields.filter(Boolean).length / 8 * 100);
 
+  // Block submit only when nothing can supply a diagnosis: no code entered AND
+  // no document for extraction to read one out of. With a file attached the
+  // server validates after extraction, so the provider is not forced to type a
+  // code the upload already contains.
+  const needsDiagnosis = diagnosisCodes.length === 0 && uploadedFiles.length === 0;
+
   const addDiagCode = () => {
     const code = diagInput.trim().toUpperCase();
     if (code && !diagnosisCodes.includes(code)) setDiagnosisCodes(prev => [...prev, code]);
@@ -3998,7 +4004,7 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
         {/* Clinical info */}
         <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 14, fontFamily: "'Fraunces', Georgia, serif", borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>Clinical Request</div>
         <div style={{ marginBottom: 14 }}>
-          {labelS("Diagnosis Codes (ICD-10)")}
+          {labelS("Diagnosis Codes (ICD-10) *")}
           <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
             <input value={diagInput} onChange={e => setDiagInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && addDiagCode()}
@@ -4072,13 +4078,23 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
 
         {error && <div style={{ marginBottom: 12, padding: "10px 14px", background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 7, fontSize: 13, color: "#991b1b" }}>{error}</div>}
 
-        <button onClick={handleSubmit} disabled={loading} style={{
+        {/* Diagnosis is required server-side. Blocking here too gives immediate
+            feedback instead of a round-trip error — except when documents are
+            attached, where extraction can supply the code and the server
+            validates after extracting. Mirrors the backend's own split. */}
+        {needsDiagnosis && (
+          <div style={{ marginBottom: 12, padding: "10px 14px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 7, fontSize: 12, color: "#92400e", fontFamily: "'Public Sans', sans-serif" }}>
+            At least one ICD-10 diagnosis code is required — add one above, or attach clinical documentation that states one.
+          </div>
+        )}
+
+        <button onClick={handleSubmit} disabled={loading || needsDiagnosis} style={{
           width: "100%", padding: "13px 0", borderRadius: 9,
-          background: loading ? "#94a3b8" : urgency === "expedited" ? "#991b1b" : urgency === "urgent" ? "#92400e" : "#1a3a5c",
+          background: (loading || needsDiagnosis) ? "#94a3b8" : urgency === "expedited" ? "#991b1b" : urgency === "urgent" ? "#92400e" : "#1a3a5c",
           color: "#fff", fontSize: 14, fontWeight: 700, border: "none",
-          cursor: loading ? "not-allowed" : "pointer",
+          cursor: (loading || needsDiagnosis) ? "not-allowed" : "pointer",
           fontFamily: "'Public Sans', sans-serif",
-          boxShadow: loading ? "none" : "0 4px 14px rgba(26,58,92,0.25)",
+          boxShadow: (loading || needsDiagnosis) ? "none" : "0 4px 14px rgba(26,58,92,0.25)",
         }}>
           {loading
             ? (uploadedFiles.length ? "Uploading & extracting with AI…" : "Submitting…")
@@ -5387,16 +5403,23 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
             </div>
             {isOpen && (
               <div style={{ borderTop: "1px solid #f1f5f9", padding: "16px 20px" }}>
-                {Array.isArray(sub.diagnosis_codes) && sub.diagnosis_codes.length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>Diagnosis Codes</span>
+                {/* Absence is itself worth showing: a case with no diagnosis
+                    cannot be matched to a guideline and will come back as a
+                    Pend, so say so rather than omitting the section. */}
+                <div style={{ marginBottom: 12 }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>Diagnosis Codes</span>
+                  {Array.isArray(sub.diagnosis_codes) && sub.diagnosis_codes.length > 0 ? (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 4 }}>
                       {sub.diagnosis_codes.map(c => (
                         <span key={c} style={{ padding: "2px 8px", borderRadius: 5, background: "#eff6ff", color: "#1a3a5c", fontSize: 11, fontFamily: "monospace", fontWeight: 600 }}>{c}</span>
                       ))}
                     </div>
-                  </div>
-                )}
+                  ) : (
+                    <div style={{ fontSize: 12, color: "#92400e", marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>
+                      No diagnosis on file — this case cannot be matched to a clinical guideline.
+                    </div>
+                  )}
+                </div>
                 <DecisionLetter submission={sub} decision={decisions[sub.submission_id]} />
                 {/* Info Requested — upload + resubmit */}
                 {sub.status === "info_requested" && !resubmitSuccess[sub.submission_id] && (
@@ -5572,7 +5595,7 @@ function ProviderDashboard({ token, clinicProfile, onNewAuth, onViewCases, onNav
             >
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", fontFamily: "'Public Sans', sans-serif" }}>{r.member_name || "Unknown Member"}</div>
-                <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 1, fontFamily: "'DM Sans', monospace" }}>{r.discipline} · {r.requested_visits} visits · {diags[0] || "—"}</div>
+                <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 1, fontFamily: "'DM Sans', monospace" }}>{r.discipline} · {r.requested_visits} visits · {diags[0] || "No diagnosis on file"}</div>
               </div>
               <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: sc.bg, color: sc.text, flexShrink: 0, textTransform: "capitalize", fontFamily: "'Public Sans', sans-serif" }}>
                 {(r.status || "submitted").replace(/_/g, " ")}
