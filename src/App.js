@@ -2784,6 +2784,12 @@ function ReviewerShell({ user, token, onLogout }) {
             diagnosisCodes: (storedMetrics.diagnosisCodes?.length ? storedMetrics.diagnosisCodes : diags),
             primaryDiagnosisCode: storedMetrics.primaryDiagnosisCode || diags[0] || null,
             requestedVisits: sub.requested_visits || 0,
+            // The note's age is computed from dateOfBirth. When extraction did
+            // not find one, the submitted DOB still has it — the header shows
+            // that date while the note quietly lost the age. submissions.dob is
+            // already the provider-input-wins merge of form and document, so it
+            // is a safe fallback rather than a competing value.
+            dateOfBirth: storedMetrics.dateOfBirth || sub.dob || null,
           },
           planRuleSet: sub.plan_id ? { planId: sub.plan_id } : null,
         });
@@ -2861,6 +2867,8 @@ function ReviewerShell({ user, token, onLogout }) {
         diagnosisCodes: (storedMetrics.diagnosisCodes?.length ? storedMetrics.diagnosisCodes : diags),
         primaryDiagnosisCode: storedMetrics.primaryDiagnosisCode || diags[0] || null,
         requestedVisits: sub.requested_visits || 0,
+        // Same DOB fallback as handleGetCase; see the comment there.
+        dateOfBirth: storedMetrics.dateOfBirth || sub.dob || null,
       },
       planRuleSet: sub.plan_id ? { planId: sub.plan_id } : null,
     });

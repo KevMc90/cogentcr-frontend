@@ -2863,7 +2863,7 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
               // Claude extraction (sm.requestedVisits) must not take precedence over it.
               requestedVisits: sub.requested_visits || sm.requestedVisits || null,
               providerNotes:   sub.provider_notes    || null,
-              metrics:         { diagnosisCodes: diags, requestedVisits: sub.requested_visits||0, functionalLimitations:[], sopIndicators:[], documentationQuality:{}, ...sm, diagnosisCodes: sm.diagnosisCodes?.length ? sm.diagnosisCodes : diags, primaryDiagnosisCode: sm.primaryDiagnosisCode || diags[0] || null, requestedVisits: sub.requested_visits || 0 },
+              metrics:         { diagnosisCodes: diags, requestedVisits: sub.requested_visits||0, functionalLimitations:[], sopIndicators:[], documentationQuality:{}, ...sm, diagnosisCodes: sm.diagnosisCodes?.length ? sm.diagnosisCodes : diags, primaryDiagnosisCode: sm.primaryDiagnosisCode || diags[0] || null, requestedVisits: sub.requested_visits || 0, dateOfBirth: sm.dateOfBirth || sub.dob || null },
             };
             setSubmissionCases(prev => {
               if (prev.some(c => c.caseId === entry.caseId)) return prev;
