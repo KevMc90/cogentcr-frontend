@@ -738,6 +738,35 @@ const GOAL_STATUS = {
   "not addressed": { icon: "?", color: "#94a3b8" },
 };
 
+/**
+ * Absence is a finding. Every measure section used to omit itself when it had
+ * no data, so a reviewer could not tell "the therapist documented no ROM" from
+ * "our extraction lost the ROM" — the panel looked identical either way, and a
+ * dropped field reached a determination unnoticed. Saying so costs one line and
+ * makes the gap visible where the measurement would have been.
+ */
+function NotDocumented({ what, docNoun }) {
+  return (
+    <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: FONTS.body, fontStyle: "italic" }}>
+      No {what} documented in this {docNoun}.
+    </div>
+  );
+}
+
+/**
+ * Which measures a discipline is expected to document. A speech evaluation has
+ * no range of motion or manual muscle testing by design, so calling out their
+ * absence there would be noise rather than a finding.
+ */
+const EXPECTED_MEASURES = {
+  PT: ["pain", "rom", "mmt", "outcome"],
+  OT: ["pain", "rom", "mmt", "outcome"],
+  ST: ["outcome"],
+};
+function expectsMeasure(discipline, key) {
+  return (EXPECTED_MEASURES[discipline] || EXPECTED_MEASURES.PT).includes(key);
+}
+
 function ProgressComparison({ kase }) {
   const ex        = kase.contract.extraction || {};
   const hpi       = kase.contract.hpiData || {};
@@ -822,6 +851,8 @@ function ProgressComparison({ kase }) {
 
   const fx = ex.functionalLimitations || [];
   const showRule = { marginBottom: 12 };
+  const expects  = k => expectsMeasure(kase.discipline, k);
+  const absent   = what => <NotDocumented what={what} docNoun="progress note" />;
 
   return (
     <div style={{ marginBottom: 14 }}>
@@ -829,9 +860,10 @@ function ProgressComparison({ kase }) {
         Progress · IE {ieDate || "—"} → {pnLabel} {pnDate || "—"} · {vtd} {vtd === 1 ? "visit" : "visits"} delivered
       </div>
 
-      {painRows.length > 0 && (
+      {(painRows.length > 0 || expects("pain")) && (
         <div style={showRule}>
           <div style={label}>Pain</div>
+          {painRows.length === 0 && absent("pain rating")}
           {painRows.map((r, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12, fontFamily: FONTS.body, marginBottom: 2 }}>
               {r.context && <span style={{ color: "#374151", minWidth: 110 }}>{r.context}</span>}
@@ -848,9 +880,10 @@ function ProgressComparison({ kase }) {
         </div>
       )}
 
-      {romRows.length > 0 && (
+      {(romRows.length > 0 || expects("rom")) && (
         <div style={showRule}>
           <div style={label}>ROM</div>
+          {romRows.length === 0 ? absent("range of motion") : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: "#f8fafc" }}>
@@ -871,12 +904,14 @@ function ProgressComparison({ kase }) {
               })}
             </tbody>
           </table>
+          )}
         </div>
       )}
 
-      {(mmtRows.length > 0 || unaffected.length > 0) && (
+      {(mmtRows.length > 0 || unaffected.length > 0 || expects("mmt")) && (
         <div style={showRule}>
           <div style={label}>MMT</div>
+          {mmtRows.length === 0 && unaffected.length === 0 && absent("manual muscle testing")}
           {mmtRows.length > 0 && (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
@@ -904,9 +939,10 @@ function ProgressComparison({ kase }) {
         </div>
       )}
 
-      {outcome && (
+      {(outcome || expects("outcome")) && (
         <div style={showRule}>
           <div style={label}>Outcome</div>
+          {!outcome ? absent("standardized outcome measure") : (
           <div style={{ fontSize: 12, fontFamily: FONTS.body, display: "flex", gap: 8, alignItems: "baseline" }}>
             {outcome.tool && <span style={{ color: "#374151", fontWeight: 600 }}>{outcome.tool}</span>}
             <span style={{ color: "#6b7280" }}>{outcome.baseline ?? "—"}</span>
@@ -918,6 +954,7 @@ function ProgressComparison({ kase }) {
               </span>
             )}
           </div>
+          )}
         </div>
       )}
 
@@ -941,17 +978,17 @@ function ProgressComparison({ kase }) {
         })}
       </div>
 
-      {fx.length > 0 && (
-        <div style={{ marginBottom: 0 }}>
-          <div style={label}>Remaining functional limitations</div>
-          {fx.map((lim, i) => (
+      <div style={{ marginBottom: 0 }}>
+        <div style={label}>Remaining functional limitations</div>
+        {fx.length === 0 ? absent("functional limitations") : (
+          <>{fx.map((lim, i) => (
             <div key={i} style={{ display: "flex", gap: 6, marginBottom: 3, alignItems: "flex-start" }}>
               <span style={{ color: "#dc2626", fontSize: 11, marginTop: 2, flexShrink: 0 }}>✕</span>
               <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4, fontFamily: FONTS.body }}>{lim}</span>
             </div>
-          ))}
-        </div>
-      )}
+          ))}</>
+        )}
+      </div>
     </div>
   );
 }
@@ -1106,10 +1143,19 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
         {isSubsequent && hasAnyClinicalData && <ProgressComparison kase={kase} />}
 
         {!isSubsequent && <>
-        {ex.painCurrent && (
+        {(ex.painCurrent || expectsMeasure(kase.discipline, "pain")) && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4, fontFamily: FONTS.body }}>Pain</div>
-            <div style={{ fontSize: 14, color: "#1e293b", fontFamily: FONTS.body }}>{ex.painCurrent}</div>
+            {ex.painCurrent
+              ? <div style={{ fontSize: 14, color: "#1e293b", fontFamily: FONTS.body }}>{ex.painCurrent}</div>
+              : <NotDocumented what="pain rating" docNoun="evaluation" />}
+          </div>
+        )}
+
+        {!hasROM && expectsMeasure(kase.discipline, "rom") && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>ROM</div>
+            <NotDocumented what="range of motion" docNoun="evaluation" />
           </div>
         )}
 
@@ -1145,6 +1191,13 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
           </div>
         )}
 
+        {!hasMMT && expectsMeasure(kase.discipline, "mmt") && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>MMT</div>
+            <NotDocumented what="manual muscle testing" docNoun="evaluation" />
+          </div>
+        )}
+
         {hasMMT && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>MMT</div>
@@ -1161,24 +1214,26 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
           </div>
         )}
 
-        {ex.functionalOutcomeScore && (
+        {(ex.functionalOutcomeScore || expectsMeasure(kase.discipline, "outcome")) && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4, fontFamily: FONTS.body }}>Outcome Score</div>
-            <div style={{ fontSize: 13, color: "#1e293b", fontFamily: FONTS.body, fontWeight: 600 }}>{ex.functionalOutcomeScore}</div>
+            {ex.functionalOutcomeScore
+              ? <div style={{ fontSize: 13, color: "#1e293b", fontFamily: FONTS.body, fontWeight: 600 }}>{ex.functionalOutcomeScore}</div>
+              : <NotDocumented what="standardized outcome measure" docNoun="evaluation" />}
           </div>
         )}
 
-        {ex.functionalLimitations && ex.functionalLimitations.length > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>Functional Limitations</div>
-            {ex.functionalLimitations.map((lim, i) => (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>Functional Limitations</div>
+          {(ex.functionalLimitations && ex.functionalLimitations.length > 0)
+            ? ex.functionalLimitations.map((lim, i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 3, alignItems: "flex-start" }}>
                 <span style={{ color: "#dc2626", fontSize: 11, marginTop: 2, flexShrink: 0 }}>✕</span>
                 <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4, fontFamily: FONTS.body }}>{lim}</span>
               </div>
-            ))}
-          </div>
-        )}
+            ))
+            : <NotDocumented what="functional limitations" docNoun="evaluation" />}
+        </div>
 
         {ex.goals && ex.goals.length > 0 && (
           <div style={{ marginBottom: 14 }}>
@@ -1193,7 +1248,10 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
             ))}
           </div>
         )}
-        {ex.goalsTotal === 0 && (
+        {/* Was `goalsTotal === 0`, which rendered nothing at all when the field
+            was absent rather than zero — the one case where the gap most needed
+            saying. Driven off the list now, so an empty goal set always shows. */}
+        {!(ex.goals && ex.goals.length > 0) && (
           <div style={{ marginBottom: 14, padding: "8px 10px", background: "#fef3c7", borderRadius: 6, border: "1px solid #fcd34d" }}>
             <span style={{ fontSize: 12, color: "#92400e", fontFamily: FONTS.body }}>No treatment goals documented</span>
           </div>
