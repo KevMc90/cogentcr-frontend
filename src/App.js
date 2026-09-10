@@ -3730,13 +3730,22 @@ function DecisionLetter({ submission, decision }) {
           </div>
         )}
 
-        {/* Rationale */}
-        {rationale && (
-          <div style={{ marginBottom: 14 }}>
-            <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>Clinical Rationale</span>
+        {/* Rationale — the formal, provider-facing explanation. The server no
+            longer substitutes internal reviewer notes when this is absent, so
+            an adverse determination with no rationale on file says so plainly
+            rather than rendering an empty section the provider can't act on. */}
+        <div style={{ marginBottom: 14 }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>Clinical Rationale</span>
+          {rationale ? (
             <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.65, marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>{rationale}</div>
-          </div>
-        )}
+          ) : (
+            <div style={{ fontSize: 13, color: "#6b7280", fontStyle: "italic", lineHeight: 1.65, marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>
+              {isDenied
+                ? "A written rationale for this determination is not yet on file. Contact CogentCR to request it before filing an appeal."
+                : "No additional rationale was recorded for this determination."}
+            </div>
+          )}
+        </div>
 
         {/* Footer note + print */}
         <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: 12, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
