@@ -702,6 +702,26 @@ function painContexts(str) {
   return out;
 }
 
+/**
+ * Append measures the extraction reported currently but did not put in the
+ * comparison, so a documented value still renders with an empty baseline rather
+ * than vanishing. Comparison objects go missing for real reasons — a progress
+ * note uploaded with no IE and no stored baseline to assemble one from, or an
+ * extraction run that returned current values only — and the reviewer needs to
+ * see today's measurement either way. The engine reads `rom`/`mmt` in exactly
+ * the same situation, so hiding them here contradicted the determination.
+ */
+function withCurrentOnly(rows, currentMap) {
+  if (!currentMap || typeof currentMap !== "object") return rows;
+  const out = rows.slice();
+  for (const [key, value] of Object.entries(currentMap)) {
+    if (value == null) continue;
+    if (out.some(r => valueForLoose({ [r.key]: true }, key) !== undefined)) continue;
+    out.push({ key, current: value, prior: null, change: null });
+  }
+  return out;
+}
+
 /** Half-grade MMT change: 0.5 → "+½", 1 → "+1", 1.5 → "+1½", 0 → "—". */
 function mmtHalfSteps(delta) {
   if (delta == null || Number.isNaN(delta)) return null;
@@ -757,19 +777,13 @@ function ProgressComparison({ kase }) {
   })();
 
   // ── ROM ──────────────────────────────────────────────────────────────
-  const romRows = progressRows(ex.romComparison);
+  const romRows = withCurrentOnly(progressRows(ex.romComparison), ex.rom);
 
   // ── MMT ──────────────────────────────────────────────────────────────
+  // Muscles graded in the note but absent from the comparison (typically the
+  // contralateral side) still count as assessed.
   const { mmtRows, unaffected } = (() => {
-    const rows = progressRows(ex.mmtComparison);
-    // Muscles graded in the note but absent from the comparison (typically the
-    // contralateral side) still count as assessed.
-    if (ex.mmt && typeof ex.mmt === "object") {
-      for (const [muscle, grade] of Object.entries(ex.mmt)) {
-        if (rows.some(r => valueForLoose({ [r.key]: 1 }, muscle) !== undefined)) continue;
-        rows.push({ key: muscle, current: grade, prior: null, change: null });
-      }
-    }
+    const rows = withCurrentOnly(progressRows(ex.mmtComparison), ex.mmt);
     const isFull = g => mmtGradeNum(g) === 5;
     const unaffected = [], kept = [];
     for (const r of rows) {
