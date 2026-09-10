@@ -412,9 +412,14 @@ function buildFallbackContract(metrics, ruling) {
       functionalLimitations:  m.functionalLimitations  || [],
       documentationQuality:   m.documentationQuality   || {},
       sopIndicators:          m.sopIndicators          || [],
-      goalsTotal:             (m.goalsText || []).length,
-      goalsMet:               0,
-      visitsToDate:           0,
+      goalsTotal:             m.goalsTotal ?? (m.goalsText || []).length,
+      goalsMet:               m.goalsMet   ?? 0,
+      // Same source the note builder reads, so the VTD badge can't disagree
+      // with the note even when the engine is offline.
+      visitsToDate:           m.visitsToDate != null ? m.visitsToDate : 0,
+      documentType:           m.documentType   || null,
+      dateOfService:          m.dateOfService  || null,
+      evaluationDate:         m.evaluationDate || null,
     },
     assessment: {
       d1: { finding: dd.d1.finding, reasoning: dd.d1.reasoning || "" },
@@ -642,6 +647,296 @@ function scoreNum(v) {
   return m ? parseFloat(m[1]) : null;
 }
 
+// ── PROGRESS COMPARISON (subsequent reviews) ───────────────────────────────────
+/** Punctuation-insensitive key lookup — the backend's normalizeKey convention. */
+function valueForLoose(obj, key) {
+  const direct = valueFor(obj, key);
+  if (direct !== undefined || !obj || typeof obj !== "object") return direct;
+  const norm = s => String(s == null ? "" : s).toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  const target = norm(key);
+  for (const [k, v] of Object.entries(obj)) if (norm(k) === target) return v;
+  return undefined;
+}
+
+/**
+ * One row per measure from a {current, prior, change} comparison. Fills in
+ * whichever of prior/change the extraction left out when the other two sides
+ * are numeric, so a row never shows a dash for a value that is derivable.
+ */
+function progressRows(cmp) {
+  if (!cmp || typeof cmp !== "object") return [];
+  const current = cmp.current && typeof cmp.current === "object" ? cmp.current : {};
+  const prior   = cmp.prior   && typeof cmp.prior   === "object" ? cmp.prior   : {};
+  const change  = cmp.change  && typeof cmp.change  === "object" ? cmp.change  : {};
+  const keys = [
+    ...Object.keys(current),
+    ...Object.keys(prior).filter(k => valueForLoose(current, k) === undefined),
+  ];
+  return keys.map(key => {
+    const cur = current[key] !== undefined ? current[key] : valueForLoose(current, key);
+    let pri = valueForLoose(prior, key);
+    let chg = valueForLoose(change, key);
+    const curN = scoreNum(cur), priN = scoreNum(pri), chgN = scoreNum(chg);
+    if (pri == null && curN != null && chgN != null) pri = curN - chgN;
+    if (chg == null && curN != null && priN != null) chg = curN - priN;
+    return { key, current: cur, prior: pri, change: chg };
+  });
+}
+
+/** "5/10 with stair descent, 2/10 at rest" → [{rating: 5, context: "with stair descent"}, …] */
+function painContexts(str) {
+  if (str == null || str === "") return [];
+  const out = [];
+  for (const part of String(str).split(/[;,]|\band\b/i)) {
+    const m = part.match(/(\d+(?:\.\d+)?)\s*\/\s*10/);
+    if (!m) continue;
+    const context = part.replace(m[0], "").replace(/\b(pain|nprs|nrs|vas)\b\s*:?/ig, "")
+      .replace(/^[\s\-–—:()]+|[\s\-–—:().]+$/g, "").trim();
+    out.push({ rating: parseFloat(m[1]), context });
+  }
+  return out;
+}
+
+/** Half-grade MMT change: 0.5 → "+½", 1 → "+1", 1.5 → "+1½", 0 → "—". */
+function mmtHalfSteps(delta) {
+  if (delta == null || Number.isNaN(delta)) return null;
+  const steps = Math.round(delta * 2);
+  if (steps === 0) return "—";
+  const whole = Math.floor(Math.abs(steps) / 2), half = Math.abs(steps) % 2 === 1;
+  return (steps > 0 ? "+" : "−") + (whole ? whole : "") + (half ? "½" : "");
+}
+
+const GOAL_STATUS = {
+  "met":           { icon: "✓", color: "#15803d" },
+  "partially met": { icon: "◐", color: "#b45309" },
+  "not met":       { icon: "✗", color: "#dc2626" },
+  "not addressed": { icon: "?", color: "#94a3b8" },
+};
+
+function ProgressComparison({ kase }) {
+  const ex        = kase.contract.extraction || {};
+  const hpi       = kase.contract.hpiData || {};
+  const label     = { fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body };
+  const th        = { textAlign: "left", padding: "3px 6px", fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: FONTS.body };
+  const tdName    = { padding: "4px 6px", color: "#374151", fontFamily: FONTS.body };
+  const tdBase    = { padding: "4px 6px", color: "#6b7280", fontFamily: FONTS.body };
+  const tdCur     = { padding: "4px 6px", fontWeight: 600, color: "#1e293b", fontFamily: FONTS.body };
+  const tdChange  = d => ({ padding: "4px 6px", fontWeight: 700, fontFamily: FONTS.body, color: d > 0 ? "#15803d" : d < 0 ? "#dc2626" : "#6b7280" });
+  const deg       = v => v == null ? "—" : (typeof v === "number" ? `${v}°` : String(v));
+
+  // ── Header line ──────────────────────────────────────────────────────
+  const ieDate  = ex.evaluationDate || hpi.ieDate || null;
+  const pnDate  = ex.dateOfService || null;
+  const pnLabel = ex.documentType && ex.documentType !== "IE" ? ex.documentType : "PN";
+  const vtd     = ex.visitsToDate != null ? ex.visitsToDate : 0;
+
+  // ── Pain ─────────────────────────────────────────────────────────────
+  const painRows = (() => {
+    const cur = painContexts(ex.painCurrent), base = painContexts(ex.painPrior);
+    const norm = s => String(s || "").toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (cur.length === 0 && base.length === 0) {
+      return (ex.painCurrent || ex.painPrior)
+        ? [{ context: "", baseline: ex.painPrior ?? null, current: ex.painCurrent ?? null, delta: null }]
+        : [];
+    }
+    const usedBase = new Set();
+    const rows = cur.map((c, i) => {
+      let bi = base.findIndex((b, j) => !usedBase.has(j) && norm(b.context) === norm(c.context));
+      if (bi === -1 && cur.length === 1 && base.length === 1) bi = 0;
+      if (bi !== -1) usedBase.add(bi);
+      const b = bi !== -1 ? base[bi] : null;
+      return { context: c.context || (b && b.context) || "", baseline: b ? `${b.rating}/10` : null, current: `${c.rating}/10`, delta: b ? c.rating - b.rating : null };
+    });
+    base.forEach((b, j) => { if (!usedBase.has(j)) rows.push({ context: b.context, baseline: `${b.rating}/10`, current: null, delta: null }); });
+    return rows;
+  })();
+
+  // ── ROM ──────────────────────────────────────────────────────────────
+  const romRows = progressRows(ex.romComparison);
+
+  // ── MMT ──────────────────────────────────────────────────────────────
+  const { mmtRows, unaffected } = (() => {
+    const rows = progressRows(ex.mmtComparison);
+    // Muscles graded in the note but absent from the comparison (typically the
+    // contralateral side) still count as assessed.
+    if (ex.mmt && typeof ex.mmt === "object") {
+      for (const [muscle, grade] of Object.entries(ex.mmt)) {
+        if (rows.some(r => valueForLoose({ [r.key]: 1 }, muscle) !== undefined)) continue;
+        rows.push({ key: muscle, current: grade, prior: null, change: null });
+      }
+    }
+    const isFull = g => mmtGradeNum(g) === 5;
+    const unaffected = [], kept = [];
+    for (const r of rows) {
+      const pn = mmtGradeNum(r.prior), cn = mmtGradeNum(r.current);
+      const unchanged = r.prior == null ? true : (pn != null && cn != null && pn === cn);
+      if (unchanged && isFull(r.current) && (r.prior == null || isFull(r.prior))) unaffected.push(r.key);
+      else kept.push({ ...r, delta: r.change != null ? scoreNum(r.change) : (pn != null && cn != null ? cn - pn : null) });
+    }
+    return { mmtRows: kept, unaffected };
+  })();
+
+  // ── Outcome ──────────────────────────────────────────────────────────
+  const outcome = (() => {
+    const oc = ex.outcomeComparison;
+    const current = oc && oc.current != null ? String(oc.current) : (ex.functionalOutcomeScore ? String(ex.functionalOutcomeScore) : null);
+    if (!current) return null;
+    const toolMatch = current.match(/^([A-Za-z][A-Za-z0-9\-\s]*?)\s*(?=[\d(])/);
+    const tool = toolMatch ? toolMatch[1].trim() : null;
+    const strip = s => tool ? String(s).replace(new RegExp("^" + tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*", "i"), "").trim() : String(s);
+    const prior = oc && oc.prior != null ? String(oc.prior) : null;
+    const change = oc && oc.change != null ? scoreNum(oc.change)
+      : (prior != null && scoreNum(current) != null && scoreNum(prior) != null ? scoreNum(current) - scoreNum(prior) : null);
+    return { tool, baseline: prior != null ? strip(prior) : null, current: strip(current), change };
+  })();
+
+  // ── Goals ────────────────────────────────────────────────────────────
+  const goals = (() => {
+    const fromBaseline = kase.contract.baseline && Array.isArray(kase.contract.baseline.goals) ? kase.contract.baseline.goals : null;
+    if (fromBaseline && fromBaseline.length > 0) {
+      return fromBaseline.map(g => ({ text: g.text, status: String(g.status || "not addressed").toLowerCase(), evidence: g.evidence || null }));
+    }
+    return (ex.goals || []).map(g => ({ text: g, status: "not addressed", evidence: null }));
+  })();
+  const goalsTotal = goals.length;
+  const goalsMet   = ex.goalsMet != null ? ex.goalsMet : goals.filter(g => g.status === "met").length;
+
+  const fx = ex.functionalLimitations || [];
+  const showRule = { marginBottom: 12 };
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: NAVY, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10, fontFamily: FONTS.body }}>
+        Progress · IE {ieDate || "—"} → {pnLabel} {pnDate || "—"} · {vtd} {vtd === 1 ? "visit" : "visits"} delivered
+      </div>
+
+      {painRows.length > 0 && (
+        <div style={showRule}>
+          <div style={label}>Pain</div>
+          {painRows.map((r, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12, fontFamily: FONTS.body, marginBottom: 2 }}>
+              {r.context && <span style={{ color: "#374151", minWidth: 110 }}>{r.context}</span>}
+              <span style={{ color: "#6b7280" }}>{r.baseline ?? "—"}</span>
+              <span style={{ color: "#9ca3af", fontSize: 11 }}>→</span>
+              <span style={{ color: "#1e293b", fontWeight: 600 }}>{r.current ?? "—"}</span>
+              {r.delta != null && (
+                <span style={{ fontWeight: 700, color: r.delta < 0 ? "#15803d" : r.delta > 0 ? "#dc2626" : "#6b7280" }}>
+                  {r.delta < 0 ? `↓${Math.abs(r.delta)}` : r.delta > 0 ? `↑${r.delta}` : "—"}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {romRows.length > 0 && (
+        <div style={showRule}>
+          <div style={label}>ROM</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "#f8fafc" }}>
+                {["Movement", "Baseline", "Current", "Change"].map(h => <th key={h} style={th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {romRows.map(({ key, prior, current, change }) => {
+                const d = scoreNum(change);
+                return (
+                  <tr key={key} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                    <td style={tdName}>{key}</td>
+                    <td style={tdBase}>{deg(prior)}</td>
+                    <td style={tdCur}>{deg(current)}</td>
+                    <td style={tdChange(d)}>{d == null ? "—" : `${d > 0 ? "+" : ""}${d}°`}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {(mmtRows.length > 0 || unaffected.length > 0) && (
+        <div style={showRule}>
+          <div style={label}>MMT</div>
+          {mmtRows.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#f8fafc" }}>
+                  {["Muscle", "Baseline", "Current", "Change"].map(h => <th key={h} style={th}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {mmtRows.map(({ key, prior, current, delta }) => (
+                  <tr key={key} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                    <td style={tdName}>{key}</td>
+                    <td style={{ ...tdBase, fontFamily: "monospace" }}>{prior == null ? "—" : String(prior)}</td>
+                    <td style={{ ...tdCur, fontFamily: "monospace" }}>{current == null ? "—" : String(current)}</td>
+                    <td style={tdChange(delta)}>{mmtHalfSteps(delta) ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {unaffected.length > 0 && (
+            <div style={{ fontSize: 11, color: "#6b7280", fontFamily: FONTS.body, marginTop: 4 }}>
+              Unaffected side: {unaffected.join(", ")} 5/5
+            </div>
+          )}
+        </div>
+      )}
+
+      {outcome && (
+        <div style={showRule}>
+          <div style={label}>Outcome</div>
+          <div style={{ fontSize: 12, fontFamily: FONTS.body, display: "flex", gap: 8, alignItems: "baseline" }}>
+            {outcome.tool && <span style={{ color: "#374151", fontWeight: 600 }}>{outcome.tool}</span>}
+            <span style={{ color: "#6b7280" }}>{outcome.baseline ?? "—"}</span>
+            <span style={{ color: "#9ca3af", fontSize: 11 }}>→</span>
+            <span style={{ color: "#1e293b", fontWeight: 600 }}>{outcome.current}</span>
+            {outcome.change != null && (
+              <span style={{ fontWeight: 700, color: outcome.change > 0 ? "#15803d" : outcome.change < 0 ? "#dc2626" : "#6b7280" }}>
+                {outcome.change > 0 ? `+${outcome.change}` : outcome.change}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div style={showRule}>
+        <div style={label}>Goals — {goalsMet} of {goalsTotal} met</div>
+        {goalsTotal === 0 ? (
+          <div style={{ padding: "8px 10px", background: "#fef3c7", borderRadius: 6, border: "1px solid #fcd34d" }}>
+            <span style={{ fontSize: 12, color: "#92400e", fontFamily: FONTS.body }}>No treatment goals documented</span>
+          </div>
+        ) : goals.map((g, i) => {
+          const s = GOAL_STATUS[g.status] || GOAL_STATUS["not addressed"];
+          const detail = g.evidence && g.evidence.toLowerCase() !== g.status ? g.evidence : null;
+          return (
+            <div key={i} style={{ display: "flex", gap: 6, marginBottom: 3, alignItems: "flex-start" }}>
+              <span title={g.status} style={{ color: s.color, fontSize: 11, marginTop: 2, flexShrink: 0, width: 10, textAlign: "center" }}>{s.icon}</span>
+              <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4, fontFamily: FONTS.body }}>
+                {g.text}{detail && <span style={{ color: "#6b7280" }}> — {detail}</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {fx.length > 0 && (
+        <div style={{ marginBottom: 0 }}>
+          <div style={label}>Remaining functional limitations</div>
+          {fx.map((lim, i) => (
+            <div key={i} style={{ display: "flex", gap: 6, marginBottom: 3, alignItems: "flex-start" }}>
+              <span style={{ color: "#dc2626", fontSize: 11, marginTop: 2, flexShrink: 0 }}>✕</span>
+              <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4, fontFamily: FONTS.body }}>{lim}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EvidenceZone({ kase, onToggleDocs, showDocs }) {
   const [inlineDocs, setInlineDocs]       = React.useState(kase.documents || []);
   const [inlineDocsReady, setInlineDo]    = React.useState(false);
@@ -673,6 +968,9 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
 
   const ex          = kase.contract.extraction;
   const rec         = kase.contract.recommendation;
+  // Subsequent reviews get the unified baseline→current comparison in place of
+  // the current-only blocks; initial reviews keep the layout below unchanged.
+  const isSubsequent = kase.reviewType === "subsequent" || kase.contract.reviewType === "subsequent";
   const hasROM      = ex.rom && Object.keys(ex.rom).length > 0;
   const hasMMT      = ex.mmt && Object.keys(ex.mmt).length > 0;
   // Guard on actual rows, not on the wrapper's key count — a comparison object
@@ -786,6 +1084,9 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
           </div>
         )}
 
+        {isSubsequent && hasAnyClinicalData && <ProgressComparison kase={kase} />}
+
+        {!isSubsequent && <>
         {ex.painCurrent && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4, fontFamily: FONTS.body }}>Pain</div>
@@ -878,6 +1179,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
             <span style={{ fontSize: 12, color: "#92400e", fontFamily: FONTS.body }}>No treatment goals documented</span>
           </div>
         )}
+        </>}
 
         {ex.documentationQuality && Object.keys(ex.documentationQuality).length > 0 && (
           <div style={{ marginBottom: 14 }}>
@@ -906,7 +1208,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
           </div>
         )}
 
-        {hasProgress && (
+        {!isSubsequent && hasProgress && (
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8, fontFamily: FONTS.body }}>
               Progress Since Last Review
@@ -929,7 +1231,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: "#f8fafc" }}>
-                      {["Movement", "Prior", "Current", "Δ", "Normal"].map(h => (
+                      {["Movement", "Prior", "Current", "Change", "Normal"].map(h => (
                         <th key={h} style={{ textAlign: "left", padding: "3px 6px", fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: FONTS.body }}>{h}</th>
                       ))}
                     </tr>
