@@ -3747,22 +3747,32 @@ function DecisionLetter({ submission, decision }) {
   );
 }
 
-function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
+/**
+ * @param {object} [prefill] — a finalized parent submission when this form was
+ *   opened via "Request Additional Visits". Member, diagnosis and discipline are
+ *   copied; visits and documents stay blank for the provider to supply. Review
+ *   type is forced to "subsequent" and locked — the parent's existence is what
+ *   makes this a continuation, so it is not the provider's to change.
+ */
+function NewSubmissionForm({ token, onSubmitted, clinicProfile, prefill, onCancelPrefill }) {
+  const isSubsequentRequest = !!prefill;
   const [providerName,    setProviderName]    = useState(clinicProfile?.clinic_name || "");
   const [providerNpi,     setProviderNpi]     = useState(clinicProfile?.clinic_npi  || "");
-  const [memberName,      setMemberName]      = useState("");
-  const [memberId,        setMemberId]        = useState("");
-  const [dob,             setDob]             = useState("");
-  const [memberState,     setMemberState]     = useState("");
-  const [discipline,      setDiscipline]      = useState(clinicProfile?.clinic_specialty?.split("/")[0] || "PT");
+  const [memberName,      setMemberName]      = useState(prefill?.member_name  || "");
+  const [memberId,        setMemberId]        = useState(prefill?.member_id    || "");
+  const [dob,             setDob]             = useState(prefill?.dob          || "");
+  const [memberState,     setMemberState]     = useState(prefill?.member_state || "");
+  const [discipline,      setDiscipline]      = useState(prefill?.discipline || clinicProfile?.clinic_specialty?.split("/")[0] || "PT");
   const [diagInput,       setDiagInput]       = useState("");
-  const [diagnosisCodes,  setDiagnosisCodes]  = useState([]);
+  const [diagnosisCodes,  setDiagnosisCodes]  = useState(
+    Array.isArray(prefill?.diagnosis_codes) ? prefill.diagnosis_codes : []
+  );
   const [requestedVisits, setRequestedVisits] = useState("");
   const [planId,          setPlanId]          = useState("");
   const [documentNames,   setDocumentNames]   = useState([""]);
   const [providerNotes,   setProviderNotes]   = useState("");
   const [urgency,         setUrgency]         = useState("standard");
-  const [reviewType,      setReviewType]      = useState("initial");
+  const [reviewType,      setReviewType]      = useState(prefill ? "subsequent" : "initial");
   const [uploadedFiles,   setUploadedFiles]   = useState([]);
   const [dragOver,        setDragOver]        = useState(false);
   const [loading,         setLoading]         = useState(false);
@@ -3836,6 +3846,15 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
         fd.append("providerNotes", providerNotes);
         fd.append("urgency", urgency);
         fd.append("reviewType", reviewType);
+        // Parent linkage. episode_id attaches the new request to the same
+        // episode; visitsToDate carries the parent's approved count forward,
+        // which is what the engine's cumulative-volume check reads — without it
+        // it has no episode total and falls back to per-request math.
+        if (prefill) {
+          fd.append("parentSubmissionId", prefill.submission_id);
+          if (prefill.episode_id != null) fd.append("episodeId", String(prefill.episode_id));
+          if (prefill.approved_visits != null) fd.append("visitsToDate", String(prefill.approved_visits));
+        }
         uploadedFiles.forEach(f => fd.append("documents", f));
         res = await axios.post(`${API_BASE}/v1/submit-with-docs`, fd, {
           headers: { Authorization: `Bearer ${token}` },
@@ -3847,6 +3866,11 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
           discipline, diagnosisCodes,
           requestedVisits: parseInt(requestedVisits) || 0,
           planId: planId || null, documentList: docList, providerNotes, urgency, reviewType,
+          ...(prefill ? {
+            parentSubmissionId: prefill.submission_id,
+            episodeId:    prefill.episode_id    ?? null,
+            visitsToDate: prefill.approved_visits ?? null,
+          } : {}),
         }, { headers: { Authorization: `Bearer ${token}` } });
       }
       onSubmitted(res.data);
@@ -3943,18 +3967,46 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile }) {
               { v: "initial",    label: "Initial Auth",     sub: "First request for this patient/episode",            border: "#bfdbfe", bg: "#eff6ff",  color: "#1d4ed8" },
               { v: "subsequent", label: "Subsequent Auth",  sub: "Continuing care — prior auth exists for this member", border: "#c4b5fd", bg: "#f5f3ff",  color: "#7c3aed" },
               { v: "concurrent", label: "Concurrent Review",sub: "Two or more active auths running simultaneously",    border: "#fde68a", bg: "#fffbeb",  color: "#92400e" },
-            ].map(opt => (
-              <button key={opt.v} onClick={() => setReviewType(opt.v)} style={{
+            ]
+              // Locked to Subsequent when continuing a finalized case: the
+              // parent's existence is what makes this a continuation, so the
+              // other options are removed rather than merely disabled.
+              .filter(opt => !isSubsequentRequest || opt.v === "subsequent")
+              .map(opt => (
+              <button key={opt.v} onClick={() => { if (!isSubsequentRequest) setReviewType(opt.v); }}
+                disabled={isSubsequentRequest}
+                style={{
                 flex: 1, padding: "11px 10px", borderRadius: 8, textAlign: "left",
                 border: `2px solid ${reviewType === opt.v ? opt.color : "#e2e8f0"}`,
                 background: reviewType === opt.v ? opt.bg : "#fff",
-                cursor: "pointer", transition: "all 0.1s",
+                cursor: isSubsequentRequest ? "default" : "pointer", transition: "all 0.1s",
               }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: reviewType === opt.v ? opt.color : "#374151", fontFamily: "'Public Sans', sans-serif" }}>{opt.label}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: reviewType === opt.v ? opt.color : "#374151", fontFamily: "'Public Sans', sans-serif" }}>
+                  {opt.label}{isSubsequentRequest ? " · locked" : ""}
+                </div>
                 <div style={{ fontSize: 10, color: reviewType === opt.v ? opt.color : "#9ca3af", marginTop: 3, fontFamily: "'Public Sans', sans-serif", lineHeight: 1.3, opacity: reviewType === opt.v ? 0.8 : 1 }}>{opt.sub}</div>
               </button>
             ))}
           </div>
+
+          {isSubsequentRequest && (
+            <div style={{ marginTop: 10, padding: "10px 14px", background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 8, fontFamily: "'Public Sans', sans-serif" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#5b21b6" }}>
+                Continuing case {String(prefill.submission_id).slice(0, 12)}…
+              </div>
+              <div style={{ fontSize: 11, color: "#6d28d9", marginTop: 3, lineHeight: 1.5 }}>
+                {prefill.member_name || "Member"} · {(prefill.diagnosis_codes || []).join(", ") || "no diagnosis on file"}
+                {prefill.approved_visits != null && <> · {prefill.approved_visits} visits approved to date</>}
+                . Member and diagnosis are copied from that authorization; enter the visits you are requesting now and attach the current progress note.
+              </div>
+              {onCancelPrefill && (
+                <button onClick={onCancelPrefill}
+                  style={{ marginTop: 8, padding: "4px 12px", borderRadius: 6, border: "1px solid #c4b5fd", background: "#fff", color: "#6d28d9", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "'Public Sans', sans-serif" }}>
+                  Start a blank request instead
+                </button>
+              )}
+            </div>
+          )}
           {reviewType === "subsequent" && (
             <div style={{ marginTop: 8, padding: "8px 12px", background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 7, fontSize: 11, color: "#6d28d9", fontFamily: "'Public Sans', sans-serif" }}>
               Please attach updated progress notes, daily notes, or clinical documentation reflecting the member's current status.
@@ -5133,7 +5185,7 @@ function InfoRequestedPanel({ submission, token, onResubmitted }) {
 // finalized, and a subsequent request must not be offered against them.
 const FINALIZED_STATUSES = new Set(["approved", "partial_denial", "denied"]);
 
-function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
+function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed, onRequestMoreVisits }) {
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading]         = useState(true);
   const [expanded, setExpanded]       = useState(null);
@@ -5490,6 +5542,23 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
                   )}
                 </div>
                 <DecisionLetter submission={sub} decision={decisions[sub.submission_id]} />
+
+                {/* Request Additional Visits — finalized cases only. An
+                    undecided prior is not a baseline to continue from. */}
+                {FINALIZED_STATUSES.has(sub.status) && onRequestMoreVisits && (
+                  <div style={{ marginTop: 14, padding: "14px 16px", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6", fontFamily: "'Public Sans', sans-serif" }}>Need more visits for this member?</div>
+                      <div style={{ fontSize: 11, color: "#6d28d9", marginTop: 2, fontFamily: "'Public Sans', sans-serif" }}>
+                        Starts a subsequent request pre-filled from this authorization. Attach the current progress note.
+                      </div>
+                    </div>
+                    <button
+                      onClick={e => { e.stopPropagation(); onRequestMoreVisits({ ...sub, ...(details[sub.submission_id] || {}) }); }}
+                      style={{ flexShrink: 0, padding: "9px 18px", borderRadius: 8, background: "#7c3aed", color: "#fff", border: "none", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Public Sans', sans-serif", whiteSpace: "nowrap" }}
+                    >Request Additional Visits</button>
+                  </div>
+                )}
                 {/* Info Requested — upload + resubmit */}
                 {sub.status === "info_requested" && !resubmitSuccess[sub.submission_id] && (
                   <InfoRequestedPanel
@@ -5773,9 +5842,28 @@ function ProviderPortal({ user, token, onLogout }) {
   const [clinicProfile, setClinicProfile] = useState(null);
   const [deepLinkCaseId, setDeepLinkCaseId] = useState(null);
 
+  const [prefillParent, setPrefillParent] = useState(null);
+
   const handleNavigateToCase = (caseId) => {
     setDeepLinkCaseId(caseId);
     setProvView("my_cases");
+    setConfirmation(null);
+  };
+
+  // "Request Additional Visits" — carry the finalized parent into the New Auth
+  // form. Keyed on submission_id so switching parents remounts the form with
+  // fresh state rather than leaving the previous member's values behind.
+  const handleRequestMoreVisits = (parentSubmission) => {
+    setPrefillParent(parentSubmission);
+    setProvView("new_submission");
+    setConfirmation(null);
+  };
+
+  // Leaving the New Auth tab clears the parent, so returning to it later starts
+  // a blank request instead of silently continuing an old case.
+  const goToView = (v) => {
+    if (v !== "new_submission") setPrefillParent(null);
+    setProvView(v);
     setConfirmation(null);
   };
 
@@ -5814,7 +5902,7 @@ function ProviderPortal({ user, token, onLogout }) {
   const TABS = (
     <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 28px", display: "flex", gap: 0 }}>
       {[["dashboard","Dashboard"], ["new_submission","New Auth"], ["my_cases","My Cases"], ["settings","Settings"]].map(([v, label]) => (
-        <button key={v} onClick={() => { setProvView(v); setConfirmation(null); }} style={{
+        <button key={v} onClick={() => goToView(v)} style={{
           padding: "12px 20px", fontSize: 13, fontWeight: provView === v ? 700 : 500,
           color: provView === v ? "#1a3a5c" : "#6b7280", background: "none", border: "none",
           borderBottom: provView === v ? "2.5px solid #1a3a5c" : "2.5px solid transparent",
@@ -5932,8 +6020,8 @@ function ProviderPortal({ user, token, onLogout }) {
     <div style={{ minHeight: "100vh", background: "#f8fafc", fontFamily: "'Public Sans', system-ui, sans-serif" }}>
       {HEADER}{TABS}
       {provView === "dashboard"      && <ProviderDashboard token={token} clinicProfile={clinicProfile} onNewAuth={() => setProvView("new_submission")} onViewCases={v => setProvView(v)} onOpenCase={handleNavigateToCase} />}
-      {provView === "new_submission" && <NewSubmissionForm token={token} clinicProfile={clinicProfile} onSubmitted={handleSubmitted} />}
-      {provView === "my_cases"       && <MyCasesView token={token} deepLinkCaseId={deepLinkCaseId} onDeepLinkConsumed={() => setDeepLinkCaseId(null)} />}
+      {provView === "new_submission" && <NewSubmissionForm key={prefillParent?.submission_id || "blank"} token={token} clinicProfile={clinicProfile} onSubmitted={handleSubmitted} prefill={prefillParent} onCancelPrefill={() => setPrefillParent(null)} />}
+      {provView === "my_cases"       && <MyCasesView token={token} deepLinkCaseId={deepLinkCaseId} onDeepLinkConsumed={() => setDeepLinkCaseId(null)} onRequestMoreVisits={handleRequestMoreVisits} />}
       {provView === "settings"       && <ClinicSettingsView token={token} profile={clinicProfile} onSaved={p => setClinicProfile(p)} />}
     </div>
   );
