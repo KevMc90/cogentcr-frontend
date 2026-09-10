@@ -5185,11 +5185,21 @@ function InfoRequestedPanel({ submission, token, onResubmitted }) {
   );
 }
 
+// The three statuses that mean a determination has been made and the case is
+// closed. Matches the backend's FINALIZED_STATUSES in utils/subsequentBaseline.js
+// — pending_review, pending_md_review, submitted and under_review are NOT
+// finalized, and a subsequent request must not be offered against them.
+const FINALIZED_STATUSES = new Set(["approved", "partial_denial", "denied"]);
+
 function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading]         = useState(true);
   const [expanded, setExpanded]       = useState(null);
   const [decisions, setDecisions]     = useState({});
+  const [details, setDetails]         = useState({});   // full submission from the detail fetch
+  const [detailErrors, setDetailErrors] = useState({}); // id -> message, so a failed fetch is visible
+  const [docsByCase, setDocsByCase]   = useState({});   // id -> [{name, signedUrl, ...}]
+  const [docErrors, setDocErrors]     = useState({});
   const [p2pModal, setP2pModal]       = useState(null);
   const [acceptModal, setAcceptModal] = useState(null);
   const [editTarget, setEditTarget]     = useState(null);
@@ -5226,15 +5236,60 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
       .catch(() => {});
   }, [token]); // eslint-disable-line
 
+  // A bare `catch {}` here hid a broken endpoint for months: the detail fetch
+  // was returning 500, the decision stayed undefined, and the decision letter
+  // quietly rendered without its approved-visit count or rationale — looking
+  // structurally complete the whole time. Failures are now recorded and shown.
   const handleExpand = async (sub) => {
     const id = sub.submission_id;
     if (expanded === id) { setExpanded(null); return; }
     setExpanded(id);
-    if (!decisions[id]) {
+    loadDocs(id);
+    if (decisions[id] === undefined && !detailErrors[id]) {
       try {
         const r = await axios.get(`${API_BASE}/v1/submissions/${id}`, { headers: { Authorization: `Bearer ${token}` } });
-        setDecisions(prev => ({ ...prev, [id]: r.data.decision }));
-      } catch {}
+        // null is a valid answer (no determination recorded yet) and must be
+        // stored as such, or every expand refetches.
+        setDecisions(prev => ({ ...prev, [id]: r.data.decision ?? null }));
+        setDetailErrors(prev => { const n = { ...prev }; delete n[id]; return n; });
+        if (r.data.submission) {
+          setDetails(prev => ({ ...prev, [id]: r.data.submission }));
+        }
+      } catch (err) {
+        console.error("[MyCases] detail fetch failed for", id, err?.response?.status, err?.message);
+        setDetailErrors(prev => ({
+          ...prev,
+          [id]: err?.response?.data?.error || "Could not load the decision details for this case.",
+        }));
+      }
+    }
+  };
+
+  // Documents are fetched separately — the endpoint mints short-lived signed
+  // URLs, so they are requested when a case is opened rather than with the list.
+  const loadDocs = async (id) => {
+    if (docsByCase[id]) return;
+    try {
+      const r = await axios.get(`${API_BASE}/v1/submissions/${id}/documents`, { headers: { Authorization: `Bearer ${token}` } });
+      setDocsByCase(prev => ({ ...prev, [id]: r.data.documents || [] }));
+      setDocErrors(prev => { const n = { ...prev }; delete n[id]; return n; });
+    } catch (err) {
+      console.error("[MyCases] document fetch failed for", id, err?.response?.status, err?.message);
+      setDocErrors(prev => ({ ...prev, [id]: err?.response?.data?.error || "Could not load documents for this case." }));
+    }
+  };
+
+  const retryDetail = async (id) => {
+    setDetailErrors(prev => { const n = { ...prev }; delete n[id]; return n; });
+    try {
+      const r = await axios.get(`${API_BASE}/v1/submissions/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+      setDecisions(prev => ({ ...prev, [id]: r.data.decision ?? null }));
+      if (r.data.submission) setDetails(prev => ({ ...prev, [id]: r.data.submission }));
+    } catch (err) {
+      setDetailErrors(prev => ({
+        ...prev,
+        [id]: err?.response?.data?.error || "Could not load the decision details for this case.",
+      }));
     }
   };
 
@@ -5403,6 +5458,73 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
             </div>
             {isOpen && (
               <div style={{ borderTop: "1px solid #f1f5f9", padding: "16px 20px" }}>
+                {/* Member + request summary. Providers see status and outcome
+                    only — nothing from the reviewer's internal assessment. */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px 18px", marginBottom: 14 }}>
+                  {[
+                    ["Member",         sub.member_name || "—"],
+                    ["Member ID",      sub.member_id   || "—"],
+                    ["Date of Birth",  sub.dob         || "—"],
+                    ["Discipline",     sub.discipline  || "—"],
+                    ["Visits Requested", sub.requested_visits != null ? String(sub.requested_visits) : "—"],
+                    ["Review Type",    sub.review_type ? sub.review_type.replace(/_/g, " ") : "initial"],
+                    ["Submitted",      sub.submitted_at ? new Date(sub.submitted_at).toLocaleDateString() : "—"],
+                    ...(FINALIZED_STATUSES.has(sub.status) ? [
+                      ["Determination", (decisions[sub.submission_id]?.determination) || sub.status.replace(/_/g, " ")],
+                      ["Visits Approved", sub.approved_visits != null
+                        ? String(sub.approved_visits)
+                        : (decisions[sub.submission_id]?.approved_visits != null ? String(decisions[sub.submission_id].approved_visits) : "—")],
+                      ["Determination Date", (() => {
+                        const d = decisions[sub.submission_id]?.recorded_at || sub.approved_at || sub.reviewed_at;
+                        return d ? new Date(d).toLocaleDateString() : "—";
+                      })()],
+                    ] : []),
+                  ].map(([k, v]) => (
+                    <div key={k}>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>{k}</span>
+                      <div style={{ fontSize: 13, color: "#1e293b", fontWeight: 500, fontFamily: "'Public Sans', sans-serif", textTransform: k === "Review Type" || k === "Determination" ? "capitalize" : "none" }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Detail-fetch failure, surfaced instead of swallowed */}
+                {detailErrors[sub.submission_id] && (
+                  <div style={{ marginBottom: 12, padding: "10px 14px", background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 7, fontSize: 12, color: "#991b1b", fontFamily: "'Public Sans', sans-serif", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <span>{detailErrors[sub.submission_id]}</span>
+                    <button onClick={e => { e.stopPropagation(); retryDetail(sub.submission_id); }}
+                      style={{ flexShrink: 0, padding: "4px 12px", borderRadius: 6, border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "'Public Sans', sans-serif" }}>Retry</button>
+                  </div>
+                )}
+
+                {/* Uploaded documents */}
+                <div style={{ marginBottom: 14 }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>Documents</span>
+                  {docErrors[sub.submission_id] ? (
+                    <div style={{ fontSize: 12, color: "#991b1b", marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>{docErrors[sub.submission_id]}</div>
+                  ) : !docsByCase[sub.submission_id] ? (
+                    <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>Loading…</div>
+                  ) : docsByCase[sub.submission_id].length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>No documents were uploaded with this request.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 5 }}>
+                      {docsByCase[sub.submission_id].map((d, i) => (
+                        <div key={(d.key || d.name || "doc") + i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: "'Public Sans', sans-serif" }}>
+                          <span style={{ color: "#6b7280" }}>📄</span>
+                          {d.signedUrl ? (
+                            <a href={d.signedUrl} target="_blank" rel="noopener noreferrer"
+                               onClick={e => e.stopPropagation()}
+                               style={{ color: "#1d4ed8", textDecoration: "none", fontWeight: 600 }}>{d.name || "Document"}</a>
+                          ) : (
+                            <span style={{ color: "#374151" }}>{d.name || "Document"}</span>
+                          )}
+                          {d.size != null && <span style={{ color: "#9ca3af", fontSize: 11 }}>({Math.round(d.size / 1024)} KB)</span>}
+                          {!d.signedUrl && <span style={{ color: "#9ca3af", fontSize: 11 }}>— not retrievable</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 {/* Absence is itself worth showing: a case with no diagnosis
                     cannot be matched to a guideline and will come back as a
                     Pend, so say so rather than omitting the section. */}
@@ -5490,7 +5612,7 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed }) {
 }
 
 // ── PROVIDER DASHBOARD ────────────────────────────────────────────────────────
-function ProviderDashboard({ token, clinicProfile, onNewAuth, onViewCases, onNavigateToCase }) {
+function ProviderDashboard({ token, clinicProfile, onNewAuth, onViewCases, onOpenCase }) {
   const [stats, setStats]   = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -5588,10 +5710,13 @@ function ProviderDashboard({ token, clinicProfile, onNewAuth, onViewCases, onNav
           return (
             <div
               key={r.submission_id}
-              onClick={() => onNavigateToCase && onNavigateToCase(r.submission_id)}
-              style={{ padding: "13px 20px", borderBottom: "1px solid #f8fafc", display: "flex", alignItems: "center", gap: 14, cursor: "pointer", transition: "background 0.1s" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "#f8fafc"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+              onClick={() => onOpenCase && onOpenCase(r.submission_id)}
+              onKeyDown={e => { if (onOpenCase && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpenCase(r.submission_id); } }}
+              role={onOpenCase ? "button" : undefined}
+              tabIndex={onOpenCase ? 0 : undefined}
+              onMouseEnter={e => { if (onOpenCase) e.currentTarget.style.background = "#f8fafc"; }}
+              onMouseLeave={e => { if (onOpenCase) e.currentTarget.style.background = "transparent"; }}
+              style={{ padding: "13px 20px", borderBottom: "1px solid #f8fafc", display: "flex", alignItems: "center", gap: 14, cursor: onOpenCase ? "pointer" : "default", transition: "background 0.12s", background: "transparent" }}
             >
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", fontFamily: "'Public Sans', sans-serif" }}>{r.member_name || "Unknown Member"}</div>
@@ -5859,7 +5984,7 @@ function ProviderPortal({ user, token, onLogout }) {
   return (
     <div style={{ minHeight: "100vh", background: "#f8fafc", fontFamily: "'Public Sans', system-ui, sans-serif" }}>
       {HEADER}{TABS}
-      {provView === "dashboard"      && <ProviderDashboard token={token} clinicProfile={clinicProfile} onNewAuth={() => setProvView("new_submission")} onViewCases={v => setProvView(v)} onNavigateToCase={handleNavigateToCase} />}
+      {provView === "dashboard"      && <ProviderDashboard token={token} clinicProfile={clinicProfile} onNewAuth={() => setProvView("new_submission")} onViewCases={v => setProvView(v)} onOpenCase={handleNavigateToCase} />}
       {provView === "new_submission" && <NewSubmissionForm token={token} clinicProfile={clinicProfile} onSubmitted={handleSubmitted} />}
       {provView === "my_cases"       && <MyCasesView token={token} deepLinkCaseId={deepLinkCaseId} onDeepLinkConsumed={() => setDeepLinkCaseId(null)} />}
       {provView === "settings"       && <ClinicSettingsView token={token} profile={clinicProfile} onSaved={p => setClinicProfile(p)} />}
