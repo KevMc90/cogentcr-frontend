@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import { parseRequestedFreqWeeks, formatVisitLine } from "../utils/visitComparison";
 import { buildUNFNote } from "../utils/unfNote";
 
@@ -23,6 +23,11 @@ const NAVY      = "#1a3a5c";
 const NAVY_DARK = "#0d1b2a";
 const NAVY_MID  = "#2d5a8e";
 const FONTS     = { heading: "'Fraunces', Georgia, serif", body: "'Public Sans', system-ui, sans-serif" };
+
+// UNF note box: opens at the note's own height, between these bounds. The drag
+// handle can go anywhere in the same range.
+const NOTE_MIN_H = 280;
+const NOTE_MAX_H = 2000;
 
 // ── SYNTHETIC QUEUE ────────────────────────────────────────────────────────────
 // All names/IDs/dates are fictitious. No PHI.
@@ -1758,7 +1763,40 @@ function UNFNotePanel({ kase, onReleaseCase }) {
   const [noteText, setNoteText] = useState(builtNote);
   const [copied, setCopied]     = useState(false);
 
-  useEffect(() => { setNoteText(builtNote); setCopied(false); }, [builtNote]);
+  // The note box sizes itself to the note, so HPI through Approved Visits is
+  // visible without dragging. It used to open at 280px and stop at 480px —
+  // roughly 25 lines — which cut a full UNF note off partway down, and the
+  // drag handle hit the cap before the rest came into view. The right column
+  // scrolls, so a tall box is fine here. NOTE_MAX_H is a backstop against a
+  // pathological note, not an expected limit; past it the box scrolls itself.
+  const noteRef      = useRef(null);
+  const autoHeight   = useRef(0);
+  const [userSized, setUserSized] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = noteRef.current;
+    if (!el || userSized) return;
+    el.style.height = "auto";                       // shrink first, or it only ever grows
+    const h = Math.min(Math.max(el.scrollHeight + 3, NOTE_MIN_H), NOTE_MAX_H);
+    el.style.height = `${h}px`;
+    autoHeight.current = h;
+  }, [noteText, userSized]);
+
+  // Once the reviewer drags the handle, their height wins — stop re-fitting it
+  // out from under them on the next keystroke.
+  useEffect(() => {
+    const el = noteRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (autoHeight.current && Math.abs(el.offsetHeight - autoHeight.current) > 2) setUserSized(true);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // A new case (or a re-evaluation) gets a fresh auto-fit rather than inheriting
+  // the height the reviewer dragged for the previous note.
+  useEffect(() => { setNoteText(builtNote); setCopied(false); setUserSized(false); }, [builtNote]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(noteText).then(() => {
@@ -1812,11 +1850,12 @@ function UNFNotePanel({ kase, onReleaseCase }) {
         )}
       </div>
       <textarea
+        ref={noteRef}
         value={noteText}
         onChange={e => setNoteText(e.target.value)}
         spellCheck={false}
         style={{
-          width: "100%", minHeight: 280, maxHeight: 480, boxSizing: "border-box",
+          width: "100%", minHeight: NOTE_MIN_H, maxHeight: NOTE_MAX_H, boxSizing: "border-box",
           resize: "vertical", overflowY: "auto",
           fontFamily: "'SF Mono', 'Consolas', 'Menlo', monospace", fontSize: 12, lineHeight: 1.6,
           padding: "14px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0",
