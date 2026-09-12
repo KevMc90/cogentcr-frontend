@@ -117,6 +117,21 @@ describe("AI Auth Demo form", () => {
     expect(url).not.toMatch(/generate-review/);
     expect(body.get("runCount")).toBe("1");
     expect(body.get("requestedVisits")).toBe("8");
+    expect(body.get("determinationModel")).toBe("claude-sonnet-5");
+  });
+
+  test("the review-model selector defaults to Sonnet 5 and posts Haiku when chosen", async () => {
+    axios.post.mockResolvedValue({ data: sample });
+    mount();
+    const sel = container.querySelector('select[aria-label="Review model"]');
+    expect(sel).toBeTruthy();
+    expect(sel.value).toBe("claude-sonnet-5");
+    expect(Array.from(sel.options).map((o) => o.textContent)).toEqual(["Sonnet 5", "Haiku 4.5"]);
+    Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set.call(sel, "claude-haiku-4-5");
+    act(() => { sel.dispatchEvent(new Event("change", { bubbles: true })); });
+    setInput(container.querySelector('input[type="number"]'), "8");
+    await act(async () => { buttonNamed(RUN).click(); });
+    expect(axios.post.mock.calls[0][1].get("determinationModel")).toBe("claude-haiku-4-5");
   });
 
   test("requested visits is required before a run is attempted", async () => {
@@ -283,6 +298,8 @@ describe("Session log", () => {
     expect(t).toContain("Session log");
     expect(t).toContain("1 case ·");
     expect(t).toContain("Recommendation");
+    expect(t).toContain("Model");
+    expect(t).toContain("claude-sonnet-5");
     expect(t).not.toContain("Agreement");
     expect(t).not.toContain("identical");
     await act(async () => { buttonNamed(RUN).click(); });

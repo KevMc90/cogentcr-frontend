@@ -8148,6 +8148,7 @@ const LOG_COLUMNS = [
   { key: "requestedVisits",    label: "Req" },
   { key: "visitsToDate",       label: "VTD" },
   { key: "visitsToDateSource", label: "VTD src" },
+  { key: "model",              label: "Model" },
   { key: "determinations",     label: "Recommendation" },
   { key: "approvedVisits",     label: "Approved" },
   { key: "guardrailErrors",    label: "Guardrails" },
@@ -8276,6 +8277,8 @@ function buildLogRow(result) {
     requestedVisits: result.requestedVisits,
     visitsToDate: result.resolved ? result.resolved.visitsToDate : "",
     visitsToDateSource: result.visitsToDateSource,
+    model: (result.telemetry && result.telemetry.determinations && result.telemetry.determinations[0]
+             && result.telemetry.determinations[0].model) || "",
     determinations: runs.length
       ? runs.map((r) => (r.ok ? r.determination : "ERROR")).join(" | ")
       : (result.determination || "PEND") + (result.determinationSource === "validation" ? " (validation)" : ""),
@@ -8300,6 +8303,10 @@ function App() {
   const [reviewType, setReviewType]                 = useState("initial");
   const [requestedVisits, setRequestedVisits]       = useState("");
   const [requestedFrequency, setRequestedFrequency] = useState("");
+  // Which model reasons (call 2). Extraction is always the model the backend
+  // pins; this only switches the review step, so it is a clean speed/accuracy
+  // comparison of the reasoning alone.
+  const [reviewModel, setReviewModel] = useState("claude-sonnet-5");
 
   // Section 2 — clinical source (any, all, or none)
   const [files, setFiles]           = useState([]);
@@ -8363,6 +8370,7 @@ function App() {
       fd.append("priorReviewerNote", priorReviewerNote.trim());
     }
     fd.append("runCount", String(runCount));
+    fd.append("determinationModel", reviewModel);
 
     setLoading(true); setResult(null); setActiveRun(0);
     try {
@@ -8483,6 +8491,14 @@ function App() {
               <input type="number" min="0" value={requestedFrequency}
                 onChange={(e) => setRequestedFrequency(e.target.value)}
                 placeholder="e.g. 2" style={inputBase} />
+            </div>
+            <div>
+              {labelEl("Review model", "Documents are read by the same model either way; this changes only the review step.")}
+              <select value={reviewModel} onChange={(e) => setReviewModel(e.target.value)}
+                style={{ ...inputBase, cursor: "pointer" }} aria-label="Review model">
+                <option value="claude-sonnet-5">Sonnet 5</option>
+                <option value="claude-haiku-4-5">Haiku 4.5</option>
+              </select>
             </div>
           </div>
 
