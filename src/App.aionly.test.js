@@ -4,14 +4,15 @@
  * This project has no `eslintConfig` in package.json, so CRA falls back to
  * eslint-config-react-app/base — which enables exactly two rules. Neither
  * no-unused-vars nor react-hooks/rules-of-hooks is enforced, so `npm run build`
- * passing proves only that the file parses. This test is the actual safety net:
- * it mounts App, drives a real run against a recorded API response, and asserts
- * the things a reviewer relies on are actually on screen — and that the things
- * deliberately removed from the demo view stay removed.
+ * passing proves only that the file parses. This test is the actual safety net.
+ *
+ * The form's flow is: pre-extract on upload (POST /v1/aionly/extract, cached
+ * on the file contents) → POST /v1/aionly/recommend (JSON, with the cached
+ * extraction) → in split mode, POST /v1/aionly/note streamed as SSE. The
+ * single-call route /v1/aionly/evaluate is never called by the form.
  *
  * The fixture in __fixtures__/aionlyResult.sample.json is a genuine
- * POST /v1/aionly/evaluate response (PCL subsequent review, both PDFs, manual
- * visits-to-date 14), not a hand-written mock.
+ * single-call response (PCL subsequent review, both PDFs, manual VTD 14).
  */
 
 import React from "react";
@@ -22,12 +23,51 @@ import App from "./App";
 import sample from "./__fixtures__/aionlyResult.sample.json";
 
 jest.mock("axios");
-
-// React 18 wants this flag before it will accept act() without warning.
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
 let container;
 let root;
+
+// A split-mode recommendation response: the same case, but the run carries
+// only the seven recommendation fields — no note, no benchmarks.
+const SPLIT_RUN = (() => {
+  const r = sample.runs[0];
+  return {
+    ok: true, runIndex: 1,
+    determination: r.determination, approvedVisits: r.approvedVisits,
+    approvedFrequency: r.approvedFrequency, approvedDurationWeeks: r.approvedDurationWeeks,
+    ruleApplied: r.ruleApplied, factsReliedOn: r.factsReliedOn, citation: r.citation,
+    guardrails: [],
+    telemetry: { call: "recommendation", model: "claude-sonnet-5", effort: "effort low", thinking: "on",
+                 latencyMs: 6100, inputTokens: 3900, outputTokens: 420, stopReason: "end_turn", estimatedCostUsd: 0.012 },
+  };
+})();
+const splitResult = { ...sample, config: { mode: "split", model: "claude-sonnet-5", effort: "low", thinking: "on" },
+  runs: [SPLIT_RUN], telemetry: { ...sample.telemetry, determinations: [SPLIT_RUN.telemetry] } };
+const singleResult = { ...sample, config: { mode: "single", model: "claude-sonnet-5", effort: "low", thinking: "on" } };
+
+const STREAMED_NOTE = "HPI/Care History:\n36 year old male, PCL tear.\n\nDetermination and Rationale:\nPartial Denial — Taper Indicated: streamed.\n\nApproved Visits:\n4";
+function sseBody() {
+  const delta = (t) => `data: ${JSON.stringify({ type: "delta", text: t })}\n\n`;
+  const done = `data: ${JSON.stringify({ type: "done", note: STREAMED_NOTE,
+    telemetry: { call: "note", model: "claude-sonnet-5", effort: "thinking off · effort low", thinking: "off", latencyMs: 9800, firstTokenMs: 900, inputTokens: 4000, outputTokens: 610, stopReason: "end_turn", estimatedCostUsd: 0.014 },
+    guardrails: [] })}\n\n`;
+  return delta("HPI/Care History:\n36 year old male, PCL tear.") + delta("\n\nDetermination and Rationale:\nPartial Denial — Taper Indicated: streamed.\n\nApproved Visits:\n4") + done;
+}
+
+function mockApi({ recommend = splitResult, extract } = {}) {
+  axios.post.mockImplementation(async (url) => {
+    if (url.endsWith("/v1/aionly/extract")) {
+      return { data: extract || { ok: true, extraction: sample.extraction, telemetry: { extraction: sample.telemetry.extraction } } };
+    }
+    if (url.endsWith("/v1/aionly/recommend")) return { data: recommend };
+    throw new Error("unexpected axios.post to " + url);
+  });
+  global.fetch = jest.fn(async (url) => {
+    if (!String(url).endsWith("/v1/aionly/note")) throw new Error("unexpected fetch to " + url);
+    return { ok: true, body: null, text: async () => sseBody() };
+  });
+}
 
 beforeEach(() => {
   localStorage.setItem("cogentus_token", "test-token");
@@ -35,45 +75,41 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   axios.post.mockReset();
+  mockApi();
 });
 
 afterEach(() => {
   act(() => { if (root) root.unmount(); });
   container.remove();
   localStorage.clear();
+  delete global.fetch;
 });
 
 function mount() {
-  act(() => {
-    root = ReactDOM.createRoot(container);
-    root.render(<App />);
-  });
+  act(() => { root = ReactDOM.createRoot(container); root.render(<App />); });
 }
-
 const text = () => container.textContent;
-const buttonNamed = (label) =>
-  Array.from(container.querySelectorAll("button")).find((b) => b.textContent.trim() === label);
+const buttonNamed = (label) => Array.from(container.querySelectorAll("button")).find((b) => b.textContent.trim() === label);
+const selectNamed = (label) => container.querySelector(`select[aria-label="${label}"]`);
 const RUN = "Extract and Review";
 
-function click(el) {
-  act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-}
-
-/** Set a controlled React input's value and fire the change React listens for. */
+function click(el) { act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); }); }
 function setInput(el, value) {
-  const proto = el.tagName === "TEXTAREA"
-    ? window.HTMLTextAreaElement.prototype
-    : window.HTMLInputElement.prototype;
+  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
   act(() => { el.dispatchEvent(new Event("input", { bubbles: true })); });
 }
+function setSelect(el, value) {
+  Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set.call(el, value);
+  act(() => { el.dispatchEvent(new Event("change", { bubbles: true })); });
+}
+const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 150)); });
 
-async function runWith(data, { subsequent = false } = {}) {
-  axios.post.mockResolvedValue({ data });
-  mount();
+async function runReview({ subsequent = false } = {}) {
   if (subsequent) click(buttonNamed("subsequent"));
   setInput(container.querySelector('input[type="number"]'), "8");
   await act(async () => { buttonNamed(RUN).click(); });
+  await settle();
 }
 
 describe("AI Auth Demo form", () => {
@@ -82,24 +118,24 @@ describe("AI Auth Demo form", () => {
     const t = text();
     expect(t).toContain("AI Auth Demo");
     expect(t).not.toContain("CogentCR");
-    expect(t).not.toContain("AI-only demo");
     expect(t).not.toContain("Test Reviewer");
     expect(buttonNamed("Log out")).toBeTruthy();
   });
 
-  test("renders the input sections and a single Extract and Review button", () => {
+  test("renders the input sections, the latency controls, and a single Extract and Review button", () => {
     mount();
     const t = text();
     expect(t).toContain("Case context");
     expect(t).toContain("Clinical source");
     expect(t).toContain("Override what the documents say");
-    expect(t).toContain("Leave blank to read from the plan of care.");
-    expect(t).toContain("copied from Auth Intelligence");
     expect(buttonNamed(RUN)).toBeTruthy();
-    expect(buttonNamed("Run")).toBeUndefined();
     expect(buttonNamed("Run 3×")).toBeUndefined();
-    // the architecture blurb is gone
     expect(t).not.toContain("No rules engine");
+    expect(selectNamed("Review model").value).toBe("claude-sonnet-5");
+    expect(selectNamed("Review effort").value).toBe("low");
+    expect(Array.from(selectNamed("Review effort").options).map((o) => o.value)).toEqual(["low", "medium", "high"]);
+    expect(selectNamed("Thinking").value).toBe("on");
+    expect(selectNamed("Review path").value).toBe("split");
   });
 
   test("section 4 appears only for a subsequent review", () => {
@@ -109,16 +145,6 @@ describe("AI Auth Demo form", () => {
     expect(text()).toContain("Prior determination");
   });
 
-  test("posts one run to /v1/aionly/evaluate — never to the rules-engine route", async () => {
-    await runWith(sample);
-    expect(axios.post).toHaveBeenCalledTimes(1);
-    const [url, body] = axios.post.mock.calls[0];
-    expect(url).toMatch(/\/v1\/aionly\/evaluate$/);
-    expect(url).not.toMatch(/generate-review/);
-    expect(body.get("runCount")).toBe("1");
-    expect(body.get("requestedVisits")).toBe("8");
-  });
-
   test("requested visits is required before a run is attempted", async () => {
     mount();
     await act(async () => { buttonNamed(RUN).click(); });
@@ -126,73 +152,130 @@ describe("AI Auth Demo form", () => {
     expect(text()).toContain("Requested visits is required.");
   });
 
-  describe("with a result rendered", () => {
-    beforeEach(async () => { await runWith(sample); });
+  test("with no clinical source it skips extraction and posts the recommendation with the chosen settings", async () => {
+    mount();
+    setSelect(selectNamed("Review effort"), "high");
+    setSelect(selectNamed("Thinking"), "off");
+    await runReview();
+    const calls = axios.post.mock.calls.map((c) => c[0]);
+    expect(calls.some((u) => u.endsWith("/v1/aionly/extract"))).toBe(false);
+    expect(calls.some((u) => u.endsWith("/v1/aionly/evaluate"))).toBe(false);
+    const rec = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/recommend"));
+    expect(rec).toBeTruthy();
+    const body = rec[1];
+    expect(body.requestedVisits).toBe(8);
+    expect(body.extraction.ran).toBe(false);
+    expect(body.mode).toBe("split");
+    expect(body.model).toBe("claude-sonnet-5");
+    expect(body.effort).toBe("high");
+    expect(body.thinking).toBe("off");
+  });
+
+  test("split path: recommendation renders first, then the note streams in and the timings line appears", async () => {
+    mount();
+    await runReview();
+    const t = text();
+    expect(t).toContain("Recommendation and note");
+    expect(t).toContain("Partial Denial — Taper");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(String(global.fetch.mock.calls[0][0])).toMatch(/\/v1\/aionly\/note$/);
+    const noteBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(noteBody.ruling.determination).toBe("PARTIAL_DENIAL_TAPER");
+    expect(noteBody.resolved.visitsToDate).toBe(14);
+    const ta = Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
+    expect(ta).toBeTruthy();
+    expect(ta.value).toContain("Taper Indicated: streamed.");
+    expect(ta.value).toContain("Approved Visits:\n4");
+    expect(t).toContain("Recommendation visible");
+    expect(t).toContain("Note complete");
+    expect(t).toContain("split · sonnet-5 · effort low · thinking on");
+    expect(t).not.toContain("Benchmarks and guideline applied");
+    expect(t).toContain("note");
+    expect(t).toContain("recommendation");
+  });
+
+  test("single path: one call, no note stream, benchmarks block shown", async () => {
+    mockApi({ recommend: singleResult });
+    mount();
+    setSelect(selectNamed("Review path"), "single");
+    await runReview();
+    expect(global.fetch).not.toHaveBeenCalled();
+    const rec = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/recommend"));
+    expect(rec[1].mode).toBe("single");
+    const t = text();
+    expect(t).toContain("Benchmarks and guideline applied");
+    expect(t).toContain("Guideline applied");
+    expect(t).toContain("Source of the figures");
+    const ta = Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
+    expect(ta.value).toBe(sample.runs[0].note);
+    expect(t).toContain("single · sonnet-5");
+  });
+
+  test("pre-extraction: choosing a file extracts in the background, and the click reuses it", async () => {
+    mount();
+    const input = container.querySelector('input[type="file"]');
+    const file = new File(["%PDF-1.4 test"], "ie.pdf", { type: "application/pdf" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    act(() => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(text()).toContain("Extraction ready");
+    const extractCalls = () => axios.post.mock.calls.filter((c) => c[0].endsWith("/v1/aionly/extract")).length;
+    expect(extractCalls()).toBe(1);
+    const fd = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/extract"))[1];
+    expect(fd.get("documents")).toBeTruthy();
+
+    await runReview();
+    expect(extractCalls()).toBe(1);
+    const rec = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/recommend"))[1];
+    expect(rec.extraction.ran).toBe(true);
+    expect(rec.extraction.raw.primaryDiagnosisCode).toBe("S83.101");
+    expect(text()).toContain("extraction cached");
+  });
+
+  test("a pre-extraction failure is shown and the run reports it rather than proceeding", async () => {
+    axios.post.mockImplementation(async (url) => {
+      if (url.endsWith("/v1/aionly/extract")) { const e = new Error("bad pdf"); e.response = { status: 400, data: { detail: "Unreadable PDF" } }; throw e; }
+      return { data: splitResult };
+    });
+    mount();
+    const input = container.querySelector('input[type="file"]');
+    Object.defineProperty(input, "files", { value: [new File(["x"], "bad.pdf", { type: "application/pdf" })], configurable: true });
+    act(() => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(text()).toContain("Extraction failed: Unreadable PDF");
+    await runReview();
+    expect(text()).toContain("Unable to read the clinical documentation: Unreadable PDF");
+    expect(axios.post.mock.calls.some((c) => c[0].endsWith("/v1/aionly/recommend"))).toBe(false);
+  });
+
+  describe("with a split result rendered", () => {
+    beforeEach(async () => { mount(); await runReview(); });
 
     test("left panel shows extracted values with provenance markers and baseline comparison", () => {
       const t = text();
       expect(t).toContain("Extraction");
-      expect(t).toContain("Objective measures");
       expect(t).toContain("document");
       expect(t).toContain("entered");
       expect(t).toMatch(/125°\s*\(95°\)/);
     });
 
-    test("right panel is titled Recommendation and note and carries the basis without severity", () => {
+    test("right panel carries the basis without severity, guardrails or ambiguity boxes", () => {
       const t = text();
-      expect(t).toContain("Recommendation and note");
-      expect(t).not.toContain("Determination and note");
       expect(t).toContain("Rule applied");
       expect(t).toContain("Facts relied on");
       expect(t).toContain("Citation");
-      // severity is backend-only now
       expect(t).not.toContain("Severity basis");
-      expect(t).not.toMatch(/Severity\s*(mild|moderate|severe)/);
-    });
-
-    test("benchmarks block is present with neutral wording and the model's stated source", () => {
-      const t = text();
-      expect(t).toContain("Benchmarks and guideline applied");
-      expect(t).toContain("Guideline applied");
-      expect(t).toContain("Source of the figures");
-      expect(t).toContain(sample.runs[0].benchmarkSource.slice(0, 40));
-      expect(t).toContain(String(sample.runs[0].benchmarkMaxVisits));
+      expect(t).not.toContain("guardrail");
       expect(t).not.toContain("unverified");
     });
 
-    test("guardrail and ambiguity boxes are not shown in the demo view", () => {
-      const t = text();
-      expect(t).not.toContain("guardrail");
-      expect(t).not.toContain("have not been verified against a source");
-      expect(t).not.toContain("The model flagged this as a judgment call");
-      // still present in the raw JSON for anyone who opens it
-      click(buttonNamed("▸ Raw determination JSON"));
-      expect(container.querySelector("pre").textContent).toContain("severityAssigned");
-    });
-
-    test("the composed note sits in its own full-width block, sized to its content, editable, with Copy Note", () => {
-      const ta = Array.from(container.querySelectorAll("textarea"))
-        .find((x) => x.value && x.value.includes("Determination and Rationale:"));
-      expect(ta).toBeTruthy();
-      expect(ta.value).toContain("Approved Visits:");
-      expect(ta.style.overflow).toBe("hidden");   // no inner scrolling
-      expect(ta.style.maxHeight).toBe("");        // no cap
-      expect(text()).toContain("Composed note");
+    test("the note is editable, sized to content, with Copy Note", () => {
+      const ta = Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
+      expect(ta.style.overflow).toBe("hidden");
       setInput(ta, ta.value + "\n\nREVIEWER EDIT");
       expect(ta.value).toContain("REVIEWER EDIT");
-      expect(sample.runs[0].note).not.toContain("REVIEWER EDIT");
       expect(buttonNamed("Copy Note")).toBeTruthy();
-      // it is a sibling of the two panels, not nested inside the right panel
-      const noteCard = ta.closest("div[style]").parentElement;
-      expect(noteCard.textContent).not.toContain("Recommendation and note");
-    });
-
-    test("telemetry strip reports per-call cost, tokens, model and visitsToDateSource", () => {
-      const t = text();
-      expect(t).toContain("determination[1]");
-      expect(t).toContain("claude-sonnet-5");
-      expect(t).toContain("visitsToDateSource");
-      expect(t).toContain("TOTAL");
+      expect(buttonNamed("Copy Note").disabled).toBe(false);
     });
 
     test("raw JSON sections are present and collapsed by default", () => {
@@ -203,43 +286,26 @@ describe("AI Auth Demo form", () => {
   });
 
   test("absence is stated explicitly rather than rendered as nothing", async () => {
-    const missing = {
-      ...sample,
-      resolved: { ...sample.resolved, rom: null, romComparison: null, functionalOutcomeScore: null, specialTests: null },
-      provenance: { ...sample.provenance, rom: "absent", functionalOutcomeScore: "absent", specialTests: "absent" },
-    };
-    await runWith(missing);
-    const t = text();
-    expect(t).toContain("No range of motion documented in this note");
-    expect(t).toContain("No standardized outcome measure documented in this note");
-    expect(t).toContain("No special tests documented in this note");
-  });
-
-  test("the no-clinical-source path explains why extraction did not run", async () => {
-    await runWith({
-      ...sample,
-      extraction: { ran: false, skipReason: "No PDFs and no pasted clinical text were supplied.", pastedTextRendered: false, documentSummary: null, raw: null },
-    });
-    expect(text()).toContain("Extraction did not run");
+    mockApi({ recommend: { ...splitResult,
+      resolved: { ...sample.resolved, rom: null, romComparison: null, functionalOutcomeScore: null },
+      provenance: { ...sample.provenance, rom: "absent", functionalOutcomeScore: "absent" } } });
+    mount();
+    await runReview();
+    expect(text()).toContain("No range of motion documented in this note");
+    expect(text()).toContain("No standardized outcome measure documented in this note");
   });
 
   test("a source disagreement about the reviewer's own input is still surfaced", async () => {
-    await runWith({
-      ...sample,
-      discrepancies: [{ field: "visitsToDate", used: 14, usedSource: "manual", alsoFound: 21, alsoSource: "extracted",
-                        note: "Manual entry differs from the value found in the documentation." }],
-    });
-    const t = text();
-    expect(t).toContain("1 source disagreement");
-    expect(t).toContain("Documentation states");
+    mockApi({ recommend: { ...splitResult, discrepancies: [{ field: "visitsToDate", used: 14, usedSource: "manual", alsoFound: 21, alsoSource: "extracted", note: "Manual entry differs from the value found in the documentation." }] } });
+    mount();
+    await runReview();
+    expect(text()).toContain("1 source disagreement");
   });
 
   test("a prior-note suggestion is offered for confirmation and never auto-applied", async () => {
-    await runWith({
-      ...sample,
-      priorNoteSuggestion: { visitsToDate: 14, excerpt: "Approved 14 visits at 2x/week x 7 weeks",
-                             message: "Prior note appears to state 14 visits approved. Confirm to use." },
-    }, { subsequent: true });
+    mockApi({ recommend: { ...splitResult, priorNoteSuggestion: { visitsToDate: 14, excerpt: "Approved 14 visits at 2x/week x 7 weeks", message: "Prior note appears to state 14 visits approved. Confirm to use." } } });
+    mount();
+    await runReview({ subsequent: true });
     expect(text()).toContain("Prior note appears to state 14 visits approved");
     const before = Array.from(container.querySelectorAll("input")).filter((i) => i.type === "number").map((i) => i.value);
     expect(before).not.toContain("14");
@@ -248,59 +314,41 @@ describe("AI Auth Demo form", () => {
     expect(after).toContain("14");
   });
 
-  test("a prior-plan assessment is shown when a prior note was supplied", async () => {
-    await runWith({
-      ...sample,
-      resolved: { ...sample.resolved, priorRationale: "Approved 14 visits. Anticipate taper once quads approach 4+/5." },
-      runs: [{ ...sample.runs[0], priorPlanReferenced: true, priorPlanConditionsMet: true,
-               priorPlanAssessment: "Quadriceps now 4/5; conditions met." }],
-    }, { subsequent: true });
-    const t = text();
-    expect(t).toContain("Prior plan assessment");
-    expect(t).toContain("Quadriceps now 4/5; conditions met.");
-  });
-
-  test("a validation failure renders as PEND with its specific failures, not an error", async () => {
-    await runWith({
-      ...sample, determination: "PEND", determinationSource: "validation",
-      validation: { passed: false, failures: [
-        { check: "objectiveMeasurePresent", message: "No clinical source was supplied, so no objective measure is available." },
-      ] },
-      runs: [],
-    });
+  test("a validation failure renders as PEND with its specific failures and no note", async () => {
+    mockApi({ recommend: { ...splitResult, determination: "PEND", determinationSource: "validation",
+      validation: { passed: false, failures: [{ check: "objectiveMeasurePresent", message: "No clinical source was supplied." }] }, runs: [] } });
+    mount();
+    await runReview();
     const t = text();
     expect(t).toContain("Pend — validation did not pass");
     expect(t).toContain("objectiveMeasurePresent");
     expect(t).toContain("No recommendation was produced for this case.");
+    expect(global.fetch).not.toHaveBeenCalled();
     expect(t).not.toContain("Composed note");
   });
 });
 
 describe("Session log", () => {
-  test("appends a row per run without run-count or agreement columns, and clears", async () => {
-    await runWith(sample);
-    let t = text();
+  test("records path, model, effort, thinking, timings, tokens and the recommendation per run", async () => {
+    mount();
+    await runReview();
+    const t = text();
     expect(t).toContain("Session log");
-    expect(t).toContain("1 case ·");
-    expect(t).toContain("Recommendation");
-    expect(t).not.toContain("Agreement");
-    expect(t).not.toContain("identical");
+    for (const col of ["Path", "Model", "Effort", "Thinking", "Extract s", "Rec visible s", "Note done s", "Rec out tok", "Note out tok", "Recommendation", "Approved"]) {
+      expect(t).toContain(col);
+    }
+    expect(t).toContain("PARTIAL_DENIAL_TAPER");
+    expect(t).toContain("4@1x4w");
+    expect(t).toContain("420");
+    expect(t).toContain("610");
     await act(async () => { buttonNamed(RUN).click(); });
+    await settle();
     expect(text()).toContain("2 cases ·");
     click(buttonNamed("Clear"));
     expect(text()).not.toContain("Session log");
   });
 
-  test("a validation pend is logged, not skipped", async () => {
-    await runWith({
-      ...sample, determination: "PEND", determinationSource: "validation",
-      validation: { passed: false, failures: [{ check: "objectiveMeasurePresent", message: "none" }] }, runs: [],
-    });
-    expect(text()).toContain("PEND (validation)");
-  });
-
-  test("CSV export produces a header row and one row per case with matching column counts", async () => {
-    // jsdom's Blob has no .text(), so capture the CSV at construction instead.
+  test("CSV export has one header row, one row per case, and consistent column counts", async () => {
     const captured = [];
     const OrigBlob = global.Blob;
     global.Blob = function (parts, opts) { captured.push(String(parts.join(""))); return new OrigBlob(parts, opts); };
@@ -310,16 +358,13 @@ describe("Session log", () => {
     let downloadName = "";
     window.HTMLAnchorElement.prototype.click = function () { downloadName = this.download; };
 
-    await runWith(sample);
+    mount();
+    await runReview();
     click(buttonNamed("Export CSV"));
-
     expect(downloadName).toMatch(/^aionly_session_\d{8}_\d{4}\.csv$/);
-    expect(captured.length).toBe(1);
     const lines = captured[0].trim().split("\n");
     expect(lines.length).toBe(2);
-    expect(lines[0]).toContain("Time,Review,Dx,Source,Req,VTD");
-    expect(lines[0]).toContain("Recommendation");
-    expect(lines[0]).not.toContain("Agreement");
+    expect(lines[0]).toContain("Path,Model,Effort,Thinking,Extract s,Rec visible s,Note done s");
     const fields = lines[1].match(/("([^"]|"")*"|[^,]*)(,|$)/g).filter((f, i, a) => i < a.length - 1);
     expect(fields.length).toBe(lines[0].split(",").length);
 

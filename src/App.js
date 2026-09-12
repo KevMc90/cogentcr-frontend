@@ -7927,7 +7927,7 @@ const DET_STYLE = {
   PEND:                      { c: AIO_C.muted, bg: AIO_C.wash,    b: AIO_C.line,      label: "Pend" },
 };
 
-function NoteBox({ note }) {
+function NoteBox({ note, streaming }) {
   const [text, setText]     = useState(note || "");
   const [copied, setCopied] = useState(false);
   const ref = useRef(null);
@@ -7956,9 +7956,9 @@ function NoteBox({ note }) {
         <div style={{
           fontSize: 10, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
           letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif",
-        }}>Composed note — editable, edits affect the copy only</div>
+        }}>Composed note — editable, edits affect the copy only{streaming ? " — writing…" : ""}</div>
         <button
-          type="button" onClick={copy}
+          type="button" onClick={copy} disabled={!!streaming}
           style={{
             padding: "6px 14px", borderRadius: 7, border: "none", cursor: "pointer",
             background: copied ? AIO_C.green : AIO_C.primary, color: AIO_C.white,
@@ -8018,6 +8018,7 @@ function DeterminationPanel({ result, run }) {
         </div>
       </div>
 
+      {run.benchmarkTypicalVisits != null && (<>
       {/* MODEL-STATED BENCHMARKS — styled as a claim, not established fact.
           This is the block the reviewer checks hardest against their own
           knowledge, so benchmarkSource sits here in full, not collapsed. */}
@@ -8049,6 +8050,8 @@ function DeterminationPanel({ result, run }) {
           <div style={{ fontSize: 12.5, color: "#4c1d95", lineHeight: 1.6 }}>{run.benchmarkSource}</div>
         </div>
       </div>
+
+      </>)}
 
       <AioSection title="Rule applied">
         <div style={{ fontSize: 12.5, color: AIO_C.ink, lineHeight: 1.6 }}>{run.ruleApplied}</div>
@@ -8148,11 +8151,19 @@ const LOG_COLUMNS = [
   { key: "requestedVisits",    label: "Req" },
   { key: "visitsToDate",       label: "VTD" },
   { key: "visitsToDateSource", label: "VTD src" },
+  { key: "mode",               label: "Path" },
+  { key: "model",              label: "Model" },
+  { key: "effort",             label: "Effort" },
+  { key: "thinking",           label: "Thinking" },
+  { key: "extractionSec",      label: "Extract s" },
+  { key: "recSec",             label: "Rec visible s" },
+  { key: "noteSec",            label: "Note done s" },
+  { key: "recOut",             label: "Rec out tok" },
+  { key: "noteOut",            label: "Note out tok" },
   { key: "determinations",     label: "Recommendation" },
   { key: "approvedVisits",     label: "Approved" },
   { key: "guardrailErrors",    label: "Guardrails" },
   { key: "costUsd",            label: "Cost $" },
-  { key: "latencySec",         label: "Latency s" },
 ];
 
 function toCsv(rows) {
@@ -8255,8 +8266,8 @@ function SessionLog({ rows, onClear }) {
   );
 }
 
-/** Flatten a completed pipeline response into one session-log row. */
-function buildLogRow(result) {
+/** Flatten a completed run (plus its client-side timings) into one session-log row. */
+function buildLogRow(result, timings) {
   const runs = result.runs || [];
   const ok   = runs.filter((r) => r.ok);
   const src = [];
@@ -8265,6 +8276,8 @@ function buildLogRow(result) {
     if (result.extraction.documentSummary || !result.extraction.pastedTextRendered) src.push("pdf");
   }
   if (src.length === 0) src.push("manual only");
+  const t = timings || {};
+  const sec = (ms) => (ms == null ? "" : (ms / 1000).toFixed(1));
 
   const now = new Date();
   return {
@@ -8276,14 +8289,90 @@ function buildLogRow(result) {
     requestedVisits: result.requestedVisits,
     visitsToDate: result.resolved ? result.resolved.visitsToDate : "",
     visitsToDateSource: result.visitsToDateSource,
+    mode: t.mode || (result.config && result.config.mode) || "",
+    model: (t.model || (result.config && result.config.model) || "").replace("claude-", ""),
+    effort: t.effort || (result.config && result.config.effort) || "",
+    thinking: t.thinking || (result.config && result.config.thinking) || "",
+    extractionSec: t.extractionCached ? "cached" : sec(t.extractionMs),
+    recSec: sec(t.recMs),
+    noteSec: sec(t.noteMs),
+    recOut: t.recOut == null ? "" : t.recOut,
+    noteOut: t.noteOut == null ? "" : t.noteOut,
     determinations: runs.length
       ? runs.map((r) => (r.ok ? r.determination : "ERROR")).join(" | ")
       : (result.determination || "PEND") + (result.determinationSource === "validation" ? " (validation)" : ""),
-    approvedVisits: ok.length ? ok.map((r) => r.approvedVisits).join(" | ") : "",
-    guardrailErrors: runs.reduce((s, r) => s + (r.guardrails || []).filter((g) => g.severity === "error").length, 0),
+    approvedVisits: ok.length ? ok.map((r) => `${r.approvedVisits}@${r.approvedFrequency}x${r.approvedDurationWeeks}w`).join(" | ") : "",
+    guardrailErrors: runs.reduce((n, r) => n + (r.guardrails || []).filter((g) => g.severity === "error").length, 0),
     costUsd: result.telemetry ? result.telemetry.total.estimatedCostUsd.toFixed(4) : "",
-    latencySec: result.telemetry ? (result.telemetry.total.wallClockMs / 1000).toFixed(1) : "",
   };
+}
+
+/* ── LATENCY EXPERIMENT HELPERS ────────────────────────────────────────────── */
+
+const REVIEW_MODELS  = [["claude-sonnet-5", "Sonnet 5"], ["claude-haiku-4-5", "Haiku 4.5"]];
+const REVIEW_EFFORTS = ["low", "medium", "high"];
+
+/**
+ * Content key for the extraction cache: the file bytes plus everything else
+ * extraction depends on (review type decides one- vs two-document handling,
+ * pasted text is an extra document, the prior note is passed to extraction).
+ * SHA-256 where the platform has it; a small FNV fold otherwise so the cache
+ * still works in environments without crypto.subtle.
+ */
+async function caseKey({ files, pastedText, reviewType, priorReviewerNote }) {
+  const parts = [reviewType, pastedText || "", priorReviewerNote || ""];
+  const buffers = [];
+  const strBytes = (str) => (typeof TextEncoder !== "undefined"
+    ? new TextEncoder().encode(str)
+    : Uint8Array.from(Array.from(str), (ch) => ch.charCodeAt(0) & 0xff));
+  for (const f of files) {
+    // Older environments have no Blob.arrayBuffer; identity falls back to the
+    // file's name, size and mtime, which is what a re-selected file changes.
+    buffers.push(typeof f.arrayBuffer === "function"
+      ? new Uint8Array(await f.arrayBuffer())
+      : strBytes(`${f.name}|${f.size}|${f.lastModified}`));
+  }
+  const head = strBytes(parts.join("|"));
+  const total = new Uint8Array(head.length + buffers.reduce((n, b) => n + b.length + 1, 0));
+  total.set(head, 0);
+  let off = head.length;
+  for (const b of buffers) { total.set(b, off); off += b.length; total[off++] = 0; }
+  if (typeof crypto !== "undefined" && crypto.subtle && crypto.subtle.digest) {
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", total));
+    return Array.from(d).map((x) => x.toString(16).padStart(2, "0")).join("");
+  }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < total.length; i++) { h ^= total[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+  return "fnv-" + h.toString(16) + "-" + total.length;
+}
+
+/** Read a server-sent-event response, calling onEvent for each `data:` line. */
+async function readSse(res, onEvent) {
+  const handle = (chunk, state) => {
+    state.buf += chunk;
+    let i;
+    while ((i = state.buf.indexOf("\n\n")) >= 0) {
+      const line = state.buf.slice(0, i).trim();
+      state.buf = state.buf.slice(i + 2);
+      if (line.startsWith("data: ")) {
+        try { onEvent(JSON.parse(line.slice(6))); } catch (e) { /* ignore malformed line */ }
+      }
+    }
+  };
+  const state = { buf: "" };
+  if (res.body && typeof res.body.getReader === "function" && typeof TextDecoder !== "undefined") {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      handle(dec.decode(value, { stream: true }), state);
+    }
+  } else {
+    // No streaming body available (older environments, tests): one chunk.
+    handle(await res.text(), state);
+  }
+  if (state.buf.trim()) handle("\n\n", state);
 }
 
 /* ── THE APP ───────────────────────────────────────────────────────────────── */
@@ -8324,6 +8413,74 @@ function App() {
   // nothing, deliberately, so this is the only record; export before reloading.
   const [sessionLog, setSessionLog] = useState([]);
 
+  // Latency experiment controls. Extraction is never affected by these; they
+  // shape only the review step.
+  const [reviewModel, setReviewModel]       = useState("claude-sonnet-5");
+  const [reviewEffort, setReviewEffort]     = useState("low");
+  const [reviewThinking, setReviewThinking] = useState("on");
+  const [reviewMode, setReviewMode]         = useState("split");
+
+  // Extraction cache, keyed on file contents + the inputs extraction depends
+  // on. Filled in the background as soon as a file is chosen, so clicking
+  // Extract and Review usually skips straight to the review call.
+  const extractCache = useRef(new Map());
+  const [extractStatus, setExtractStatus] = useState({ state: "idle" }); // idle | pending | ready | error
+
+  // Streamed note and the reviewer-visible timings.
+  const [streamedNote, setStreamedNote] = useState("");
+  const [noteStreaming, setNoteStreaming] = useState(false);
+  const [timings, setTimings] = useState(null);
+
+  const buildExtractForm = useCallback(() => {
+    const fd = new FormData();
+    fd.append("reviewType", reviewType);
+    files.forEach((f) => fd.append("documents", f));
+    if (pastedText.trim()) fd.append("pastedClinicalText", pastedText.trim());
+    if (reviewType === "subsequent" && priorReviewerNote.trim()) fd.append("priorReviewerNote", priorReviewerNote.trim());
+    return fd;
+  }, [reviewType, files, pastedText, priorReviewerNote]);
+
+  /** Start (or reuse) extraction for the current source set. Resolves to the cache entry. */
+  const ensureExtraction = useCallback(async () => {
+    const hasSource = files.length > 0 || pastedText.trim() !== "";
+    if (!hasSource) return { key: null, status: "none", data: null };
+    const key = await caseKey({ files, pastedText: pastedText.trim(), reviewType,
+      priorReviewerNote: reviewType === "subsequent" ? priorReviewerNote.trim() : "" });
+    const cache = extractCache.current;
+    if (cache.has(key)) return cache.get(key);
+    const entry = { key, status: "pending", data: null, error: null, startedAt: performance.now(), ms: null };
+    entry.promise = axios.post(`${API_BASE}/v1/aionly/extract`, buildExtractForm(), {
+      headers: { "Content-Type": "multipart/form-data", Authorization: `Bearer ${token}` }, timeout: 600000,
+    }).then((res) => {
+      entry.status = "ready"; entry.data = res.data; entry.ms = performance.now() - entry.startedAt;
+      setExtractStatus((cur) => (cur.key === key ? { key, state: "ready", ms: entry.ms } : cur));
+      return entry;
+    }).catch((err) => {
+      entry.status = "error"; entry.error = err?.response?.data?.detail || err?.response?.data?.error || err.message;
+      setExtractStatus((cur) => (cur.key === key ? { key, state: "error", error: entry.error } : cur));
+      return entry;
+    });
+    cache.set(key, entry);
+    setExtractStatus({ key, state: "pending" });
+    return entry;
+  }, [files, pastedText, reviewType, priorReviewerNote, token, buildExtractForm]);
+
+  // Pre-extract on upload: whenever the source set changes, start extraction
+  // in the background (debounced so typing into the paste box doesn't fire a
+  // request per keystroke).
+  useEffect(() => {
+    if (!token) return undefined;
+    const hasSource = files.length > 0 || pastedText.trim() !== "";
+    if (!hasSource) { setExtractStatus({ state: "idle" }); return undefined; }
+    const t = setTimeout(() => {
+      ensureExtraction().then((entry) => {
+        if (entry && entry.status === "ready") setExtractStatus({ key: entry.key, state: "ready", ms: entry.ms });
+        else if (entry && entry.status === "error") setExtractStatus({ key: entry.key, state: "error", error: entry.error });
+      });
+    }, files.length > 0 && pastedText.trim() === "" ? 50 : 800);
+    return () => clearTimeout(t);
+  }, [files, pastedText, reviewType, priorReviewerNote, token, ensureExtraction]);
+
   const handleAuthSuccess = (tok, userData) => {
     localStorage.setItem("cogentus_token", tok);
     localStorage.setItem("cogentus_user", JSON.stringify(userData));
@@ -8344,35 +8501,90 @@ function App() {
     return <AuthPage onAuthSuccess={handleAuthSuccess} />;
   }
 
-  const run = async (runCount) => {
+  const run = async () => {
     setError("");
     if (!requestedVisits) { setError("Requested visits is required."); return; }
 
-    const fd = new FormData();
-    fd.append("reviewType", reviewType);
-    fd.append("requestedVisits", String(parseInt(requestedVisits, 10)));
-    if (requestedFrequency)     fd.append("requestedFrequency", String(parseInt(requestedFrequency, 10)));
-    files.forEach((f) => fd.append("documents", f));
-    if (pastedText.trim())      fd.append("pastedClinicalText", pastedText.trim());
-    if (diagnosisCodeOverride.trim()) fd.append("diagnosisCodeOverride", diagnosisCodeOverride.trim());
-    if (visitsToDateOverride !== "") {
-      fd.append("visitsToDateOverride", String(parseInt(visitsToDateOverride, 10)));
-      fd.append("visitsToDateOverrideSource", vtdSource);
-    }
-    if (reviewType === "subsequent" && priorReviewerNote.trim()) {
-      fd.append("priorReviewerNote", priorReviewerNote.trim());
-    }
-    fd.append("runCount", String(runCount));
-
+    const t0 = performance.now();
     setLoading(true); setResult(null); setActiveRun(0);
+    setStreamedNote(""); setNoteStreaming(false); setTimings(null);
     try {
-      const res = await axios.post(`${API_BASE}/v1/aionly/evaluate`, fd, {
-        headers: { "Content-Type": "multipart/form-data", Authorization: `Bearer ${token}` },
-        timeout: 600000,
+      // 1. Extraction — reuse the pre-extracted result when it exists.
+      let entry = await ensureExtraction();
+      const cachedBefore = entry.status === "ready";
+      if (entry.status === "pending") entry = await entry.promise;
+      if (entry.status === "error") { setError(`Unable to read the clinical documentation: ${entry.error}`); return; }
+      const extractionMs = entry.status === "ready" ? (cachedBefore ? 0 : performance.now() - t0) : 0;
+
+      // 2. Recommendation — visible the moment it returns.
+      const body = {
+        reviewType,
+        requestedVisits: parseInt(requestedVisits, 10),
+        requestedFrequency: requestedFrequency ? parseInt(requestedFrequency, 10) : null,
+        diagnosisCodeOverride: diagnosisCodeOverride.trim() || null,
+        visitsToDateOverride: visitsToDateOverride !== "" ? parseInt(visitsToDateOverride, 10) : null,
+        visitsToDateOverrideSource: vtdSource,
+        priorReviewerNote: reviewType === "subsequent" && priorReviewerNote.trim() ? priorReviewerNote.trim() : null,
+        extraction: entry.data ? entry.data.extraction : { ran: false, raw: null, skipReason: "No PDFs and no pasted clinical text were supplied." },
+        extractionTelemetry: entry.data ? entry.data.telemetry.extraction : null,
+        mode: reviewMode, model: reviewModel, effort: reviewEffort, thinking: reviewThinking,
+      };
+      const res = await axios.post(`${API_BASE}/v1/aionly/recommend`, body, {
+        headers: { Authorization: `Bearer ${token}` }, timeout: 600000,
       });
-      setResult(res.data);
-      setSessionLog((log) => [...log, buildLogRow(res.data)]);
+      const recMs = performance.now() - t0;
+      let data = res.data;
+      setResult(data);
+      const run0 = data.runs && data.runs[0];
+      let noteMs = recMs;
+      let noteTelemetry = null;
+
+      // 3. Note — streamed in split mode; already present in single mode.
+      if (reviewMode === "split" && run0 && run0.ok) {
+        setNoteStreaming(true);
+        let text = "";
+        const noteRes = await fetch(`${API_BASE}/v1/aionly/note`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ resolved: data.resolved, provenance: data.provenance,
+            priorReviewerNote: body.priorReviewerNote, ruling: run0, model: reviewModel }),
+        });
+        let done = null;
+        await readSse(noteRes, (ev) => {
+          if (ev.type === "delta") { text += ev.text; setStreamedNote(text); }
+          else if (ev.type === "done") done = ev;
+          else if (ev.type === "error") throw new Error(ev.error);
+        });
+        noteMs = performance.now() - t0;
+        noteTelemetry = done ? done.telemetry : null;
+        data = {
+          ...data,
+          runs: [{ ...run0, note: done ? done.note : text, guardrails: done ? done.guardrails : run0.guardrails }],
+          telemetry: done ? {
+            ...data.telemetry,
+            determinations: [...(data.telemetry.determinations || []), done.telemetry],
+            total: {
+              ...data.telemetry.total,
+              latencyMs: (data.telemetry.total.latencyMs || 0) + (done.telemetry.latencyMs || 0),
+              inputTokens: (data.telemetry.total.inputTokens || 0) + (done.telemetry.inputTokens || 0),
+              outputTokens: (data.telemetry.total.outputTokens || 0) + (done.telemetry.outputTokens || 0),
+              estimatedCostUsd: Number(((data.telemetry.total.estimatedCostUsd || 0) + (done.telemetry.estimatedCostUsd || 0)).toFixed(6)),
+              calls: (data.telemetry.total.calls || 0) + 1,
+            },
+          } : data.telemetry,
+        };
+        setResult(data);
+        setNoteStreaming(false);
+      }
+
+      const t = { extractionMs, extractionCached: cachedBefore, extractionServerMs: entry.data && entry.data.telemetry.extraction ? entry.data.telemetry.extraction.latencyMs : null,
+                  recMs, noteMs, mode: reviewMode, model: reviewModel, effort: reviewEffort, thinking: reviewThinking,
+                  recOut: run0 && run0.telemetry ? run0.telemetry.outputTokens : null,
+                  noteOut: noteTelemetry ? noteTelemetry.outputTokens : (run0 && run0.telemetry ? run0.telemetry.outputTokens : null) };
+      setTimings(t);
+      setSessionLog((log) => [...log, buildLogRow(data, t)]);
     } catch (err) {
+      setNoteStreaming(false);
       if (err?.response?.status === 401) handleAuthError();
       else setError(err?.response?.data?.error || err?.response?.data?.detail || `Run failed: ${err.message}`);
     } finally {
@@ -8486,6 +8698,36 @@ function App() {
             </div>
           </div>
 
+          {/* Latency experiment — shapes the review step only; extraction is unaffected. */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 24, padding: "12px 14px", background: AIO_C.wash, border: `1px solid ${AIO_C.line}`, borderRadius: 9 }}>
+            <div>
+              {labelEl("Review model")}
+              <select value={reviewModel} onChange={(e) => setReviewModel(e.target.value)} aria-label="Review model" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
+                {REVIEW_MODELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+            <div>
+              {labelEl("Review effort")}
+              <select value={reviewEffort} onChange={(e) => setReviewEffort(e.target.value)} aria-label="Review effort" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
+                {REVIEW_EFFORTS.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+            <div>
+              {labelEl("Thinking")}
+              <select value={reviewThinking} onChange={(e) => setReviewThinking(e.target.value)} aria-label="Thinking" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
+                <option value="on">on</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+            <div>
+              {labelEl("Review path")}
+              <select value={reviewMode} onChange={(e) => setReviewMode(e.target.value)} aria-label="Review path" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
+                <option value="split">Split — recommendation first, note streamed</option>
+                <option value="single">Single call — recommendation and note together</option>
+              </select>
+            </div>
+          </div>
+
           {/* SECTION 2 — CLINICAL SOURCE */}
           {sectionHead(2, "Clinical source — any, all, or none")}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 24 }}>
@@ -8507,6 +8749,15 @@ function App() {
                 style={{ ...inputBase, resize: "vertical", lineHeight: 1.55, fontSize: 12.5 }} />
             </div>
           </div>
+
+          {extractStatus.state !== "idle" && (
+            <div style={{ marginTop: -12, marginBottom: 22, fontSize: 12, fontFamily: '"DM Sans", sans-serif', fontWeight: 600,
+                          color: extractStatus.state === "ready" ? AIO_C.green : extractStatus.state === "error" ? AIO_C.red : AIO_C.muted }}>
+              {extractStatus.state === "pending" && "Extracting in the background…"}
+              {extractStatus.state === "ready" && `Extraction ready${extractStatus.ms ? ` (${(extractStatus.ms / 1000).toFixed(1)}s)` : ""} — review will start immediately.`}
+              {extractStatus.state === "error" && `Extraction failed: ${extractStatus.error}`}
+            </div>
+          )}
 
           {/* SECTION 3 — MANUAL OVERRIDES */}
           <button type="button" onClick={() => setShowOverrides((s) => !s)}
@@ -8596,7 +8847,7 @@ function App() {
           )}
 
           <div style={{ display: "flex", gap: 10 }}>
-            <button type="button" onClick={() => run(1)} disabled={loading}
+            <button type="button" onClick={() => run()} disabled={loading}
               style={{
                 flex: 1, padding: "13px 20px", borderRadius: 9, border: "none",
                 background: loading ? AIO_C.faint : AIO_C.primary, color: "#fff",
@@ -8606,7 +8857,7 @@ function App() {
           </div>
           {loading && (
             <div style={{ marginTop: 12, fontSize: 12, color: AIO_C.muted, textAlign: "center" }}>
-              This takes about a minute — the documents are read first, then reviewed.
+              {noteStreaming ? "Writing the note…" : extractStatus.state === "pending" ? "Reading the documents, then reviewing…" : "Reviewing…"}
             </div>
           )}
         </div>
@@ -8627,6 +8878,17 @@ function App() {
                     • <strong>{f.check}</strong> — {f.message}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {timings && (
+              <div style={{ ...card, padding: "10px 18px", fontSize: 12.5, color: AIO_C.ink, fontFamily: '"DM Sans", sans-serif', display: "flex", gap: 22, flexWrap: "wrap" }}>
+                <span><strong>Recommendation visible</strong> in {(timings.recMs / 1000).toFixed(1)}s</span>
+                <span><strong>Note complete</strong> in {(timings.noteMs / 1000).toFixed(1)}s</span>
+                <span style={{ color: AIO_C.muted }}>
+                  extraction {timings.extractionCached ? `cached — saved ${timings.extractionServerMs ? (timings.extractionServerMs / 1000).toFixed(1) + "s" : "the read"}` : timings.extractionMs ? `${(timings.extractionMs / 1000).toFixed(1)}s on click` : "not needed"}
+                </span>
+                <span style={{ color: AIO_C.muted }}>{timings.mode} · {timings.model.replace("claude-", "")} · effort {timings.effort} · thinking {timings.thinking}</span>
               </div>
             )}
 
@@ -8652,9 +8914,9 @@ function App() {
               </div>
             </div>
 
-            {activeRunObj && activeRunObj.ok && (
+            {activeRunObj && activeRunObj.ok && (activeRunObj.note || noteStreaming) && (
               <div style={{ ...card, padding: "20px 22px", marginTop: 20, marginBottom: 0 }}>
-                <NoteBox note={activeRunObj.note} />
+                <NoteBox note={noteStreaming ? streamedNote : activeRunObj.note} streaming={noteStreaming} />
               </div>
             )}
 
