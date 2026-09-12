@@ -8121,6 +8121,7 @@ function TelemetryStrip({ telemetry, visitsToDateSource }) {
         <div key={i}>
           {cell("call", c.call)}
           {cell("model", c.model)}
+          {c.effort && cell("effort", c.effort)}
           {cell("latency", `${(c.latencyMs / 1000).toFixed(1)}s`)}
           {cell("tokens", `${c.inputTokens != null ? c.inputTokens : "?"} in / ${c.outputTokens != null ? c.outputTokens : "?"} out`)}
           {cell("cost", c.estimatedCostUsd != null ? `$${c.estimatedCostUsd.toFixed(4)}` : "—")}
