@@ -106,43 +106,6 @@ function formatDateTime(iso) {
   return `${mm}/${dd}/${yyyy} ${hh}:${min}`;
 }
 
-// --- parseReview ------------------------------------------------------------
-function parseReview(reviewText) {
-  if (!reviewText) return null;
-
-  const headingPattern = SECTION_KEYS.map(({ label }) =>
-    label.replace(/\//g, "\\/").replace(/\s+/g, "\\s+")
-  ).join("|");
-  const splitter = new RegExp(`((?:${headingPattern})\\s*:?)`, "gi");
-
-  const parts = reviewText.split(splitter).map((s) => s.trim()).filter(Boolean);
-
-  if (parts.length < 2) {
-    return [{ label: "HPI/Care History", content: reviewText.trim() }];
-  }
-
-  const sections = [];
-  for (let i = 0; i < parts.length; i++) {
-    const matchedKey = SECTION_KEYS.find(({ label }) =>
-      parts[i].replace(/\s*:$/, "").toLowerCase() === label.toLowerCase()
-    );
-    if (matchedKey) {
-      const nextIsContent =
-        parts[i + 1] &&
-        !SECTION_KEYS.find(({ label }) =>
-          parts[i + 1].replace(/\s*:$/, "").toLowerCase() === label.toLowerCase()
-        );
-      const content = nextIsContent ? parts[i + 1] : "";
-      sections.push({ label: matchedKey.label, content: content.trim() });
-      if (content) i++;
-    }
-  }
-
-  return SECTION_KEYS.map(({ label }) => {
-    const found = sections.find((s) => s.label === label);
-    return { label, content: found ? found.content : "" };
-  });
-}
 
 // --- Spinner ----------------------------------------------------------------
 function Spinner() {
@@ -379,118 +342,6 @@ function HistoryRow({ row, isExpanded, onToggle }) {
   );
 }
 
-// --- ReviewHistory ----------------------------------------------------------
-function ReviewHistory({ refreshTrigger, token, onAuthError }) {
-  const [reviews, setReviews]       = useState([]);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState("");
-  const [expandedId, setExpandedId] = useState(null);
-
-  const fetchReviews = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await axios.get(`${API_BASE}/api/reviews`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setReviews(res.data.reviews || []);
-    } catch (err) {
-      if (err?.response?.status === 401) {
-        onAuthError();
-      } else {
-        setError("Could not load review history.");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [token, onAuthError]);
-
-  useEffect(() => { fetchReviews(); }, [fetchReviews, refreshTrigger]);
-
-  const card = {
-    background: "#fff",
-    border: "1px solid #e2e8f0",
-    borderRadius: 12,
-    marginBottom: 20,
-    boxShadow: "0 2px 12px rgba(0,0,0,0.07)",
-    overflow: "hidden",
-  };
-
-  return (
-    <div style={card}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "14px 20px",
-          background: "linear-gradient(135deg, #1a3a5c 0%, #2d5a8e 100%)",
-        }}
-      >
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", letterSpacing: "0.07em", textTransform: "uppercase", fontFamily: '"DM Sans", sans-serif' }}>
-          Review History
-        </span>
-        <button
-          onClick={fetchReviews}
-          style={{
-            background: "rgba(255,255,255,0.12)",
-            border: "1px solid rgba(255,255,255,0.28)",
-            borderRadius: 6,
-            padding: "4px 12px",
-            fontSize: 12,
-            fontWeight: 600,
-            color: "#fff",
-            cursor: "pointer",
-            fontFamily: '"DM Sans", sans-serif',
-          }}
-        >
-          Refresh
-        </button>
-      </div>
-
-      {reviews.length > 0 && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "140px 80px 90px 1fr 80px",
-            gap: 12,
-            padding: "8px 20px",
-            background: "#f8fafc",
-            borderBottom: "1px solid #e2e8f0",
-          }}
-        >
-          {["Date / Time", "Type", "Dx Code", "Determination", "Approved"].map((h) => (
-            <span
-              key={h}
-              style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: '"DM Sans", sans-serif' }}
-            >
-              {h}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {loading ? (
-        <div style={{ padding: "24px 20px", color: "#6b7280", fontSize: 14 }}>Loading...</div>
-      ) : error ? (
-        <div style={{ padding: "24px 20px", color: "#991b1b", fontSize: 14 }}>{error}</div>
-      ) : reviews.length === 0 ? (
-        <div style={{ padding: "32px 20px", textAlign: "center", color: "#9ca3af", fontSize: 14, fontStyle: "italic" }}>
-          No reviews generated yet
-        </div>
-      ) : (
-        reviews.map((row) => (
-          <HistoryRow
-            key={row.id}
-            row={row}
-            isExpanded={expandedId === row.id}
-            onToggle={() => setExpandedId(expandedId === row.id ? null : row.id)}
-          />
-        ))
-      )}
-    </div>
-  );
-}
 
 // --- AuthPage ---------------------------------------------------------------
 function AuthPage({ onAuthSuccess }) {
@@ -7821,614 +7672,914 @@ function MDShell({ user, token, onLogout }) {
 }
 
 // --- App --------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
+// AI-ONLY DEMO — the two-call, no-rules-engine feasibility experiment.
+//
+// This REPLACES the legacy single-page UR form that used to live in App(). It
+// is not a second route alongside it: opening the demo URL gets you this. The
+// form posts to POST /v1/aionly/evaluate (extraction → shape validation →
+// determination AND note in one model call), never to /api/generate-review,
+// and nothing on this page touches the deterministic rules engine.
+//
+// The shell, header and auth are deliberately unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AIO_C = {
+  ink: "#0f172a", primary: "#1a3a5c", muted: "#64748b", faint: "#94a3b8",
+  line: "#e2e8f0", wash: "#f8fafc", white: "#fff",
+  amber: "#b45309", amberBg: "#fffbeb", amberLine: "#fcd34d",
+  green: "#15803d", greenBg: "#f0fdf4", greenLine: "#86efac",
+  red: "#991b1b", redBg: "#fef2f2", redLine: "#fca5a5",
+  claim: "#7c3aed", claimBg: "#faf5ff", claimLine: "#ddd6fe",
+};
+
+const AIO_SOURCE_LABEL = {
+  manual:     "entered",
+  extracted:  "document",
+  prior_note: "prior note",
+  defaulted:  "default",
+  absent:     "absent",
+};
+const AIO_SOURCE_TITLE = {
+  manual:     "Entered manually on the form — this value wins over anything extracted.",
+  extracted:  "Read out of the submitted documentation by the extraction call.",
+  prior_note: "Parsed from the pasted prior determination and confirmed by the reviewer.",
+  defaulted:  "No source supplied this; the pipeline applied a default.",
+  absent:     "Not documented and not supplied.",
+};
+
+/** Small muted marker showing where a displayed value came from. */
+function ProvTag({ source }) {
+  if (!source) return null;
+  const isManual = source === "manual" || source === "prior_note";
+  const isGone   = source === "absent" || source === "defaulted";
+  return (
+    <span
+      title={AIO_SOURCE_TITLE[source] || source}
+      style={{
+        marginLeft: 6, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.04em",
+        textTransform: "uppercase", padding: "1px 5px", borderRadius: 4,
+        border: `1px solid ${isManual ? AIO_C.greenLine : isGone ? AIO_C.line : AIO_C.line}`,
+        background: isManual ? AIO_C.greenBg : isGone ? AIO_C.wash : AIO_C.wash,
+        color: isManual ? AIO_C.green : isGone ? AIO_C.faint : AIO_C.muted,
+        fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap",
+      }}
+    >
+      {AIO_SOURCE_LABEL[source] || source}
+    </span>
+  );
+}
+
+/** One label/value row with its provenance marker. */
+function EvRow({ label, value, source, absentText }) {
+  const gone = source === "absent" || value == null || value === "" ||
+               (Array.isArray(value) && value.length === 0);
+  return (
+    <div style={{ display: "flex", gap: 10, padding: "5px 0", borderBottom: `1px solid ${AIO_C.wash}`, alignItems: "baseline" }}>
+      <div style={{ flex: "0 0 148px", fontSize: 11, color: AIO_C.muted, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+      <div style={{ flex: 1, fontSize: 13, color: gone ? AIO_C.faint : AIO_C.ink, fontStyle: gone ? "italic" : "normal", lineHeight: 1.5 }}>
+        {gone ? (absentText || "Not documented") : value}
+        <ProvTag source={source} />
+      </div>
+    </div>
+  );
+}
+
+function AioSection({ title, children }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{
+        fontSize: 10, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+        letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif",
+        paddingBottom: 5, marginBottom: 4, borderBottom: `1px solid ${AIO_C.line}`,
+      }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function Collapsible({ title, children, defaultOpen }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <div style={{ marginTop: 12, border: `1px solid ${AIO_C.line}`, borderRadius: 8, overflow: "hidden" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: "100%", textAlign: "left", padding: "8px 12px", background: AIO_C.wash,
+          border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, color: AIO_C.muted,
+          textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'DM Sans', sans-serif",
+        }}
+      >
+        {open ? "▾" : "▸"} {title}
+      </button>
+      {open && (
+        <pre style={{
+          margin: 0, padding: 12, maxHeight: 340, overflow: "auto", background: AIO_C.white,
+          fontSize: 11, lineHeight: 1.5, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          color: AIO_C.ink, whiteSpace: "pre-wrap", wordBreak: "break-word",
+        }}>{children}</pre>
+      )}
+    </div>
+  );
+}
+
+/** Render a ROM/MMT comparison map as "current (baseline)" pairs. */
+function formatComparison(cmp, unit) {
+  if (!cmp || !cmp.current || Object.keys(cmp.current).length === 0) return null;
+  return Object.entries(cmp.current).map(([k, cur]) => {
+    const prior = cmp.prior ? cmp.prior[k] : undefined;
+    const u = unit || "";
+    return `${k} ${cur}${u}${prior != null ? ` (${prior}${u})` : ""}`;
+  }).join(", ");
+}
+function formatMap(map, unit) {
+  if (!map || Object.keys(map).length === 0) return null;
+  return Object.entries(map).map(([k, v]) => {
+    const numeric = typeof v === "number" || /^-?\d+(\.\d+)?$/.test(String(v).trim());
+    return `${k} ${v}${numeric ? (unit || "") : ""}`;
+  }).join(", ");
+}
+
+/* ── LEFT PANEL — EXTRACTION ───────────────────────────────────────────────── */
+
+function ExtractionPanel({ result }) {
+  const r    = result.resolved   || {};
+  const p    = result.provenance || {};
+  const isSUB = result.reviewType === "subsequent";
+  const romText = (isSUB && formatComparison(r.romComparison, "°")) || formatMap(r.rom, "°");
+  const mmtText = (isSUB && formatComparison(r.mmtComparison, "")) || formatMap(r.mmt, "");
+  const outText = (() => {
+    const oc = r.outcomeComparison;
+    if (isSUB && oc && oc.current) return `${oc.current}${oc.prior ? ` (${oc.prior})` : ""}`;
+    return r.functionalOutcomeScore;
+  })();
+
+  return (
+    <div>
+      {/* Discrepancies, prominently — a reviewer should see these, not hunt for them. */}
+      {result.discrepancies && result.discrepancies.length > 0 && (
+        <div style={{
+          marginBottom: 16, padding: "12px 14px", background: AIO_C.amberBg,
+          border: `1px solid ${AIO_C.amberLine}`, borderRadius: 8,
+        }}>
+          <div style={{
+            fontSize: 10, fontWeight: 800, color: AIO_C.amber, textTransform: "uppercase",
+            letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif", marginBottom: 6,
+          }}>
+            {result.discrepancies.length} source disagreement{result.discrepancies.length === 1 ? "" : "s"}
+          </div>
+          {result.discrepancies.map((d, i) => (
+            <div key={i} style={{ fontSize: 12.5, color: "#78350f", lineHeight: 1.55, marginTop: i ? 6 : 0 }}>
+              <strong>{d.field}</strong> — using <strong>{String(d.used)}</strong> ({AIO_SOURCE_LABEL[d.usedSource] || d.usedSource}).
+              {" "}Documentation states <strong>{String(d.alsoFound)}</strong>.
+              <div style={{ fontSize: 11.5, color: AIO_C.amber, marginTop: 2 }}>{d.note}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!result.extraction.ran && (
+        <div style={{
+          marginBottom: 16, padding: "10px 14px", background: AIO_C.wash,
+          border: `1px dashed ${AIO_C.line}`, borderRadius: 8, fontSize: 12.5, color: AIO_C.muted,
+        }}>
+          Extraction did not run — {result.extraction.skipReason} The case proceeded on manually
+          entered fields alone.
+        </div>
+      )}
+
+      {result.extraction.pastedTextRendered && (
+        <div style={{ marginBottom: 12, fontSize: 11.5, color: AIO_C.muted }}>
+          Pasted clinical text was rendered to a document and read by the same extraction call the
+          PDF path uses.
+        </div>
+      )}
+
+      <AioSection title="Case">
+        <EvRow label="Review type"       value={r.reviewType}       source={p.reviewType} />
+        <EvRow label="Requested visits"  value={r.requestedVisits}  source={p.requestedVisits} />
+        <EvRow label="Requested freq/wk" value={r.requestedFrequency} source={p.requestedFrequency} absentText="Not stated on the form or in the plan of care" />
+        <EvRow label="Visits to date"    value={r.visitsToDate}     source={p.visitsToDate} />
+        <EvRow label="Diagnosis"         value={r.diagnosisCode ? `${r.diagnosisCode}${r.primaryDiagnosis ? ` — ${r.primaryDiagnosis}` : ""}` : null} source={p.diagnosisCode} absentText="No diagnosis code found or entered" />
+        <EvRow label="Discipline"        value={r.therapyType}      source={p.therapyType} />
+        <EvRow label="Document"          value={r.documentType && r.dateOfService ? `${r.documentType} ${r.dateOfService}` : (r.documentType || r.dateOfService)} source={p.documentType} />
+        {isSUB && <EvRow label="IE date" value={r.evaluationDate}   source={p.evaluationDate} />}
+      </AioSection>
+
+      <AioSection title={isSUB ? "Objective measures — current (baseline)" : "Objective measures"}>
+        <EvRow label="Pain" value={isSUB && r.painPrior ? `${r.painCurrent} (${r.painPrior})` : r.painCurrent}
+               source={p.painCurrent} absentText="No pain rating documented in this note" />
+        <EvRow label="Range of motion" value={romText} source={p.rom}
+               absentText="No range of motion documented in this note" />
+        <EvRow label="Strength (MMT)" value={mmtText} source={p.mmt}
+               absentText="No strength grades documented in this note" />
+        <EvRow label="Outcome score" value={outText} source={p.functionalOutcomeScore}
+               absentText="No standardized outcome measure documented in this note" />
+        <EvRow label="Special tests" value={r.specialTests ? r.specialTests.join(", ") : null} source={p.specialTests}
+               absentText="No special tests documented in this note" />
+      </AioSection>
+
+      <AioSection title="Function and plan">
+        <EvRow label="Functional limits" value={r.functionalLimitations ? r.functionalLimitations.join("; ") : null}
+               source={p.functionalLimitations} absentText="No functional limitations documented in this note" />
+        <EvRow label="Goals"
+               value={r.goalsTotal != null ? `${r.goalsMet != null ? r.goalsMet : "?"}/${r.goalsTotal} met` : null}
+               source={p.goalsTotal} absentText="No goals documented in this note" />
+        <EvRow label="Skilled care" value={r.sopIndicators ? r.sopIndicators.join("; ") : null}
+               source={p.sopIndicators} absentText="No skilled interventions documented in this note" />
+        <EvRow label="HEP status" value={r.hepStatus} source={p.hepStatus}
+               absentText="Home exercise program not mentioned" />
+        <EvRow label="Plan of care" value={r.poc} source={p.poc}
+               absentText="No plan of care statement found in this note" />
+      </AioSection>
+
+      {isSUB && Array.isArray(r.goalStatuses) && r.goalStatuses.length > 0 && (
+        <AioSection title="Goal status">
+          {r.goalStatuses.map((g, i) => (
+            <div key={i} style={{ fontSize: 12.5, padding: "4px 0", borderBottom: `1px solid ${AIO_C.wash}`, lineHeight: 1.5 }}>
+              <span style={{ color: AIO_C.ink }}>{g.goal}</span>
+              <span style={{
+                marginLeft: 8, fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+                color: g.status === "met" ? AIO_C.green : g.status === "not addressed" ? AIO_C.faint : AIO_C.amber,
+              }}>{g.status}</span>
+            </div>
+          ))}
+        </AioSection>
+      )}
+
+      <Collapsible title="Raw extraction JSON">
+        {result.extraction.raw ? JSON.stringify(result.extraction.raw, null, 2) : "Extraction did not run."}
+      </Collapsible>
+    </div>
+  );
+}
+
+/* ── RIGHT PANEL — DETERMINATION AND NOTE ──────────────────────────────────── */
+
+const DET_STYLE = {
+  APPROVED:                  { c: AIO_C.green, bg: AIO_C.greenBg, b: AIO_C.greenLine, label: "Approved" },
+  PARTIAL_DENIAL_TAPER:      { c: AIO_C.amber, bg: AIO_C.amberBg, b: AIO_C.amberLine, label: "Partial Denial — Taper" },
+  PARTIAL_DENIAL_CUMULATIVE: { c: AIO_C.amber, bg: AIO_C.amberBg, b: AIO_C.amberLine, label: "Partial Denial — Cumulative Volume" },
+  PARTIAL_DENIAL_FREQUENCY:  { c: AIO_C.amber, bg: AIO_C.amberBg, b: AIO_C.amberLine, label: "Partial Denial — Frequency" },
+  PARTIAL_DENIAL_UNSKILLED:  { c: AIO_C.amber, bg: AIO_C.amberBg, b: AIO_C.amberLine, label: "Partial Denial — Unskilled" },
+  FULL_DENIAL:               { c: AIO_C.red,   bg: AIO_C.redBg,   b: AIO_C.redLine,   label: "Full Denial" },
+  PEND:                      { c: AIO_C.muted, bg: AIO_C.wash,    b: AIO_C.line,      label: "Pend" },
+};
+
+function NoteBox({ note }) {
+  const [text, setText]     = useState(note || "");
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { setText(note || ""); setCopied(false); }, [note]);
+
+  const copy = () => {
+    // Edits affect the copy only — result.runs[n].note is never written back.
+    const write = navigator.clipboard && navigator.clipboard.writeText
+      ? navigator.clipboard.writeText(text)
+      : Promise.reject(new Error("clipboard unavailable"));
+    write.then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); })
+         .catch(() => { setCopied(false); });
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{
+          fontSize: 10, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+          letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif",
+        }}>Note — editable, edits affect the copy only</div>
+        <button
+          type="button" onClick={copy}
+          style={{
+            padding: "6px 14px", borderRadius: 7, border: "none", cursor: "pointer",
+            background: copied ? AIO_C.green : AIO_C.primary, color: AIO_C.white,
+            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+            transition: "background 0.15s",
+          }}
+        >{copied ? "✓ Copied" : "Copy Note"}</button>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+        style={{
+          width: "100%", minHeight: 320, maxHeight: 560, boxSizing: "border-box",
+          border: `1px solid ${AIO_C.line}`, borderRadius: 8, padding: 14,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: 12.5, lineHeight: 1.65, color: AIO_C.ink, background: AIO_C.white,
+          resize: "vertical", outline: "none", overflow: "auto",
+        }}
+      />
+    </div>
+  );
+}
+
+function DeterminationPanel({ result, run }) {
+  if (!run) return null;
+
+  if (!run.ok) {
+    return (
+      <div style={{ padding: "14px 16px", background: AIO_C.redBg, border: `1px solid ${AIO_C.redLine}`, borderRadius: 8, fontSize: 13, color: AIO_C.red }}>
+        {run.error}
+      </div>
+    );
+  }
+
+  const d = DET_STYLE[run.determination] || DET_STYLE.PEND;
+  const errs = (run.guardrails || []).filter((g) => g.severity === "error");
+  const info = (run.guardrails || []).filter((g) => g.severity !== "error");
+
+  const chip = (label, value) => (
+    <div style={{ minWidth: 82 }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color: AIO_C.ink, fontFamily: "'Fraunces', Georgia, serif", lineHeight: 1.2 }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      {/* Basis strip */}
+      <div style={{ background: d.bg, border: `1.5px solid ${d.b}`, borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: d.c, fontFamily: "'Fraunces', Georgia, serif", lineHeight: 1.15 }}>
+          {d.label}
+        </div>
+        <div style={{ display: "flex", gap: 22, flexWrap: "wrap", marginTop: 10 }}>
+          {chip("Visits", run.approvedVisits)}
+          {chip("Freq/wk", run.approvedFrequency || "—")}
+          {chip("Weeks", run.approvedDurationWeeks || "—")}
+          {chip("Severity", run.severityAssigned)}
+        </div>
+      </div>
+
+      <AioSection title="Severity basis">
+        <div style={{ fontSize: 12.5, color: AIO_C.ink, lineHeight: 1.6 }}>{run.severityBasis}</div>
+      </AioSection>
+
+      {/* MODEL-STATED BENCHMARKS — styled as a claim, not established fact.
+          This is the block the reviewer checks hardest against their own
+          knowledge, so benchmarkSource sits here in full, not collapsed. */}
+      <div style={{
+        marginBottom: 16, borderRadius: 9, overflow: "hidden",
+        border: `1.5px dashed ${AIO_C.claimLine}`, background: AIO_C.claimBg,
+      }}>
+        <div style={{
+          padding: "7px 12px", background: "#f3e8ff", fontSize: 10, fontWeight: 800,
+          color: AIO_C.claim, textTransform: "uppercase", letterSpacing: "0.07em",
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+          Benchmarks stated by the model — unverified claim
+        </div>
+        <div style={{ padding: "10px 12px" }}>
+          <div style={{ display: "flex", gap: 22, flexWrap: "wrap", marginBottom: 10 }}>
+            {[["Typical visits", run.benchmarkTypicalVisits],
+              ["Episode max", run.benchmarkMaxVisits],
+              ["Max freq/wk", run.benchmarkMaxFrequency]].map(([k, v]) => (
+              <div key={k}>
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: AIO_C.claim, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'DM Sans', sans-serif" }}>{k}</div>
+                <div style={{ fontSize: 17, fontWeight: 800, color: "#5b21b6", fontFamily: "'Fraunces', Georgia, serif", lineHeight: 1.2 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: AIO_C.claim, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "'DM Sans', sans-serif" }}>Guideline it says it applied</div>
+          <div style={{ fontSize: 12.5, color: "#4c1d95", lineHeight: 1.6, marginBottom: 8 }}>{run.guidelineApplied}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: AIO_C.claim, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "'DM Sans', sans-serif" }}>Where it says the figures come from</div>
+          <div style={{ fontSize: 12.5, color: "#4c1d95", lineHeight: 1.6 }}>{run.benchmarkSource}</div>
+        </div>
+      </div>
+
+      <AioSection title="Rule applied">
+        <div style={{ fontSize: 12.5, color: AIO_C.ink, lineHeight: 1.6 }}>{run.ruleApplied}</div>
+      </AioSection>
+
+      <AioSection title="Facts relied on">
+        {Array.isArray(run.factsReliedOn) && run.factsReliedOn.length > 0 ? (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: AIO_C.ink, lineHeight: 1.7 }}>
+            {run.factsReliedOn.map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        ) : <div style={{ fontSize: 12.5, color: AIO_C.faint, fontStyle: "italic" }}>None stated.</div>}
+      </AioSection>
+
+      <AioSection title="Citation — unverified">
+        <div style={{ fontSize: 12.5, color: AIO_C.ink, lineHeight: 1.6 }}>{run.citation}</div>
+      </AioSection>
+
+      {/* Prior plan assessment — given room, it is one of the more interesting
+          things to read when a prior note was supplied. */}
+      {result.resolved && result.resolved.priorRationale && (
+        <div style={{
+          marginBottom: 16, padding: "12px 14px", borderRadius: 9,
+          background: "#eff6ff", border: "1px solid #bfdbfe",
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif", marginBottom: 6 }}>
+            Prior plan assessment
+          </div>
+          <div style={{ display: "flex", gap: 18, marginBottom: 8, fontSize: 12 }}>
+            <span style={{ color: "#1e3a8a" }}>
+              Prior plan referenced: <strong>{run.priorPlanReferenced ? "yes" : "no"}</strong>
+            </span>
+            <span style={{ color: "#1e3a8a" }}>
+              Conditions met: <strong>{run.priorPlanConditionsMet ? "yes" : "no"}</strong>
+            </span>
+          </div>
+          <div style={{ fontSize: 12.5, color: "#1e3a8a", lineHeight: 1.65 }}>
+            {run.priorPlanAssessment || <span style={{ fontStyle: "italic", color: "#60a5fa" }}>No assessment returned.</span>}
+          </div>
+        </div>
+      )}
+
+      {run.ambiguityNote && (
+        <div style={{
+          marginBottom: 16, padding: "12px 14px", borderRadius: 9,
+          background: "#fffbeb", borderLeft: `4px solid ${AIO_C.amberLine}`, border: `1px solid ${AIO_C.amberLine}`,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: AIO_C.amber, textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif", marginBottom: 5 }}>
+            The model flagged this as a judgment call
+          </div>
+          <div style={{ fontSize: 12.5, color: "#78350f", lineHeight: 1.65, fontStyle: "italic" }}>{run.ambiguityNote}</div>
+        </div>
+      )}
+
+      {errs.length > 0 && (
+        <div style={{ marginBottom: 12, padding: "12px 14px", background: AIO_C.amberBg, border: `1px solid ${AIO_C.amberLine}`, borderRadius: 9 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: AIO_C.amber, textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif", marginBottom: 6 }}>
+            {errs.length} guardrail {errs.length === 1 ? "failure" : "failures"}
+          </div>
+          {errs.map((g, i) => (
+            <div key={i} style={{ fontSize: 12.5, color: "#78350f", lineHeight: 1.55, marginTop: i ? 7 : 0 }}>
+              <strong>{g.check}</strong> — {g.message}
+            </div>
+          ))}
+        </div>
+      )}
+      {info.map((g, i) => (
+        <div key={i} style={{ marginBottom: 8, fontSize: 11.5, color: AIO_C.muted, lineHeight: 1.5 }}>
+          ⓘ {g.message}
+        </div>
+      ))}
+
+      <NoteBox note={run.note} />
+
+      <Collapsible title="Raw determination JSON">
+        {JSON.stringify(
+          Object.fromEntries(Object.entries(run).filter(([k]) => k !== "guardrails" && k !== "telemetry")),
+          null, 2
+        )}
+      </Collapsible>
+    </div>
+  );
+}
+
+/* ── TELEMETRY STRIP ───────────────────────────────────────────────────────── */
+
+function TelemetryStrip({ telemetry, visitsToDateSource }) {
+  if (!telemetry) return null;
+  const calls = [telemetry.extraction, ...(telemetry.determinations || [])].filter(Boolean);
+  const cell = (label, value) => (
+    <span style={{ marginRight: 18, whiteSpace: "nowrap" }}>
+      <span style={{ color: AIO_C.faint }}>{label} </span>
+      <span style={{ color: AIO_C.muted, fontWeight: 600 }}>{value}</span>
+    </span>
+  );
+  return (
+    <div style={{
+      marginTop: 18, padding: "10px 14px", background: AIO_C.wash,
+      border: `1px solid ${AIO_C.line}`, borderRadius: 8,
+      fontSize: 11, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", lineHeight: 1.9,
+    }}>
+      {calls.map((c, i) => (
+        <div key={i}>
+          {cell("call", c.call)}
+          {cell("model", c.model)}
+          {cell("latency", `${(c.latencyMs / 1000).toFixed(1)}s`)}
+          {cell("tokens", `${c.inputTokens != null ? c.inputTokens : "?"} in / ${c.outputTokens != null ? c.outputTokens : "?"} out`)}
+          {cell("cost", c.estimatedCostUsd != null ? `$${c.estimatedCostUsd.toFixed(4)}` : "—")}
+          {cell("stop", c.stopReason || "—")}
+        </div>
+      ))}
+      <div style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${AIO_C.line}` }}>
+        {cell("TOTAL", `${(telemetry.total.wallClockMs / 1000).toFixed(1)}s`)}
+        {cell("tokens", `${telemetry.total.inputTokens} in / ${telemetry.total.outputTokens} out`)}
+        {cell("cost", `$${telemetry.total.estimatedCostUsd.toFixed(4)}`)}
+        {cell("visitsToDateSource", visitsToDateSource)}
+      </div>
+    </div>
+  );
+}
+
+/* ── THE APP ───────────────────────────────────────────────────────────────── */
+
 function App() {
-  // Auth state — initialised from localStorage
+  // Auth state — initialised from localStorage. Unchanged.
   const [token, setToken] = useState(() => localStorage.getItem("cogentus_token") || "");
   const [user, setUser]   = useState(() => {
     try { return JSON.parse(localStorage.getItem("cogentus_user") || "null"); }
     catch { return null; }
   });
 
-  // Plan config
-  const [plans, setPlans]               = useState([]);
-  const [selectedPlanId, setSelectedPlanId] = useState("");
+  // Section 1 — case context (always manual)
+  const [reviewType, setReviewType]                 = useState("initial");
+  const [requestedVisits, setRequestedVisits]       = useState("");
+  const [requestedFrequency, setRequestedFrequency] = useState("");
 
-  useEffect(() => {
-    if (!token) { setPlans([]); return; }
-    axios.get(`${API_BASE}/v1/plans`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(res => setPlans(res.data.plans || []))
-      .catch(() => {});
-  }, [token]);
+  // Section 2 — clinical source (any, all, or none)
+  const [files, setFiles]           = useState([]);
+  const [pastedText, setPastedText] = useState("");
 
-  // Review form state
-  const [reviewType, setReviewType]           = useState("initial");
-  const [therapyType, setTherapyType]         = useState("PT");
-  const [hpi, setHpi]                         = useState("");
-  const [priorNote, setPriorNote]             = useState("");
-  const [requestedVisits, setRequestedVisits] = useState("");
-  const [files, setFiles]                     = useState([]);
-  const [review, setReview]                   = useState("");
-  const [clinicalSummary, setClinicalSummary] = useState("");
-  const [hpiData, setHpiData]                 = useState(null);
-  const [ruling, setRuling]                   = useState(null);
-  const [reviewId, setReviewId]               = useState(null);
-  const [reviewMetrics, setReviewMetrics]     = useState(null);
-  const [documentSummary, setDocumentSummary] = useState(null);
-  const [error, setError]                     = useState("");
-  const [loading, setLoading]                 = useState(false);
-  const [historyRefresh, setHistoryRefresh]   = useState(0);
+  // Section 3 — manual overrides
+  const [showOverrides, setShowOverrides]           = useState(false);
+  const [diagnosisCodeOverride, setDiagnosisCode]   = useState("");
+  const [visitsToDateOverride, setVisitsToDate]     = useState("");
+  const [vtdSource, setVtdSource]                   = useState("manual");
+
+  // Section 4 — prior determination (subsequent only)
+  const [priorReviewerNote, setPriorReviewerNote] = useState("");
+
+  // Result
+  const [result, setResult]   = useState(null);
+  const [activeRun, setActiveRun] = useState(0);
+  const [error, setError]     = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleAuthSuccess = (tok, userData) => {
     localStorage.setItem("cogentus_token", tok);
     localStorage.setItem("cogentus_user", JSON.stringify(userData));
-    setToken(tok);
-    setUser(userData);
+    setToken(tok); setUser(userData);
   };
-
   const handleAuthError = useCallback(() => {
     localStorage.removeItem("cogentus_token");
     localStorage.removeItem("cogentus_user");
-    setToken("");
-    setUser(null);
+    setToken(""); setUser(null);
   }, []);
-
   const handleLogout = () => {
     localStorage.removeItem("cogentus_token");
     localStorage.removeItem("cogentus_user");
-    setToken("");
-    setUser(null);
+    setToken(""); setUser(null);
   };
 
-  // Show auth page when not logged in
   if (!token || !user) {
     return <AuthPage onAuthSuccess={handleAuthSuccess} />;
   }
 
-  const authHeaders = { Authorization: `Bearer ${token}` };
-
-  const buildFormData = () => {
-    const fd = new FormData();
-    files.forEach(f => fd.append("pdfs", f));
-    fd.append("reviewType", reviewType);
-    fd.append("therapyType", therapyType);
-    fd.append("hpi", hpi.trim());
-    fd.append("requestedVisits", String(parseInt(requestedVisits || "0", 10)));
-    if (reviewType === "subsequent") {
-      fd.append("priorNote", priorNote.trim());
-    }
-    return fd;
-  };
-
-  const handleSubmit = async () => {
+  const run = async (runCount) => {
     setError("");
-    setReview("");
-    setClinicalSummary("");
-    setHpiData(null);
-    setRuling(null);
-    setReviewId(null);
-    setReviewMetrics(null);
-    setDocumentSummary(null);
+    if (!requestedVisits) { setError("Requested visits is required."); return; }
 
-    if (files.length === 0) { setError("At least one supporting PDF is required."); return; }
-    if (!requestedVisits)   { setError("Requested Visits is required."); return; }
+    const fd = new FormData();
+    fd.append("reviewType", reviewType);
+    fd.append("requestedVisits", String(parseInt(requestedVisits, 10)));
+    if (requestedFrequency)     fd.append("requestedFrequency", String(parseInt(requestedFrequency, 10)));
+    files.forEach((f) => fd.append("documents", f));
+    if (pastedText.trim())      fd.append("pastedClinicalText", pastedText.trim());
+    if (diagnosisCodeOverride.trim()) fd.append("diagnosisCodeOverride", diagnosisCodeOverride.trim());
+    if (visitsToDateOverride !== "") {
+      fd.append("visitsToDateOverride", String(parseInt(visitsToDateOverride, 10)));
+      fd.append("visitsToDateOverrideSource", vtdSource);
+    }
+    if (reviewType === "subsequent" && priorReviewerNote.trim()) {
+      fd.append("priorReviewerNote", priorReviewerNote.trim());
+    }
+    fd.append("runCount", String(runCount));
 
-    setLoading(true);
+    setLoading(true); setResult(null); setActiveRun(0);
     try {
-      const res = await axios.post(
-        `${API_BASE}/api/generate-review`,
-        buildFormData(),
-        { headers: { "Content-Type": "multipart/form-data", ...authHeaders } }
-      );
-      setReview(res.data.review || "");
-      setHpiData(res.data.hpiData || null);
-      setClinicalSummary(res.data.clinicalSummary || "");
-      setRuling(res.data.ruling || null);
-      setReviewId(res.data.reviewId || null);
-      setReviewMetrics(res.data.metrics || null);
-      setDocumentSummary(res.data.documentSummary || null);
-      setHistoryRefresh((n) => n + 1);
+      const res = await axios.post(`${API_BASE}/v1/aionly/evaluate`, fd, {
+        headers: { "Content-Type": "multipart/form-data", Authorization: `Bearer ${token}` },
+        timeout: 600000,
+      });
+      setResult(res.data);
     } catch (err) {
-      if (err?.response?.status === 401) {
-        handleAuthError();
-      } else {
-        const msg = err?.response?.data?.error;
-        setError(msg || `Error generating review: ${err.message}`);
-      }
+      if (err?.response?.status === 401) handleAuthError();
+      else setError(err?.response?.data?.error || err?.response?.data?.detail || `Run failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // UNF panel — this is the richer "COGENTUS CLINICAL DETERMINATION" letterhead
-  // export (kept as-is, still wired to the card header's Export .txt button
-  // below); it's independent of the UNF note text and still reads the raw
-  // `review` string, which the backend still returns unchanged. UNFNoteBox
-  // below gets its own separate, plain-text Copy Note button that copies
-  // whatever's currently in the (possibly edited) note textarea.
-  const handleExport = () => {
-    if (!review) return;
-    const secs = parseReview(review);
-    if (!secs) return;
-    const get = (label) => secs.find((s) => s.label === label)?.content || "";
-
-    const now = new Date();
-    const mm   = String(now.getMonth() + 1).padStart(2, "0");
-    const dd   = String(now.getDate()).padStart(2, "0");
-    const yyyy = now.getFullYear();
-    const hh   = String(now.getHours()).padStart(2, "0");
-    const min  = String(now.getMinutes()).padStart(2, "0");
-    const dateStr     = `${mm}/${dd}/${yyyy} ${hh}:${min}`;
-    const fileDateStr = `${mm}${dd}${yyyy}`;
-    const icd10 = (reviewMetrics?.primaryDiagnosisCode || "Unknown").replace(/[^A-Z0-9.]/gi, "");
-
-    const content = [
-      "COGENTUS CLINICAL DETERMINATION",
-      `Generated: ${dateStr}`,
-      `Reviewer: ${user?.name || user?.email || "Unknown"}`,
-      `Review Type: ${reviewType === "initial" ? "Initial" : "Subsequent"}`,
-      "═══════════════════════════════════════",
-      "",
-      "HPI / CARE HISTORY",
-      get("HPI/Care History"),
-      "",
-      "CLINICAL SUMMARY",
-      get("Clinical Summary"),
-      "",
-      "PLAN OF CARE",
-      get("POC"),
-      "",
-      `REQUESTED VISITS: ${get("Requested Visits")}`,
-      "",
-      "DETERMINATION AND RATIONALE",
-      get("Determination and Rationale"),
-      "",
-      `APPROVED VISITS: ${get("Approved Visits")}`,
-      "",
-      "═══════════════════════════════════════",
-      "Generated by CogentCR Clinical Intelligence",
-      "This determination is based on submitted clinical documentation and published evidence-based guidelines.",
-      "For questions contact your utilization review supervisor.",
-    ].join("\n");
-
-    const blob = new Blob([content], { type: "text/plain" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `CogentCR_Review_${icd10}_${fileDateStr}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const acceptSuggestion = () => {
+    const s = result && result.priorNoteSuggestion;
+    if (!s) return;
+    setVisitsToDate(String(s.visitsToDate));
+    setVtdSource("prior_note");
+    setShowOverrides(true);
   };
 
-  const sections = review ? parseReview(review) : null;
-
-  // Shared style tokens
+  /* -- style tokens (kept from the shell this replaces) -- */
   const card = {
-    background: "#fff",
-    border: "1px solid #e2e8f0",
-    borderRadius: 12,
-    marginBottom: 20,
-    boxShadow: "0 2px 12px rgba(0,0,0,0.07)",
-    overflow: "hidden",
+    background: "#fff", border: `1px solid ${AIO_C.line}`, borderRadius: 12,
+    marginBottom: 20, boxShadow: "0 2px 12px rgba(0,0,0,0.07)", overflow: "hidden",
   };
-  const fieldWrap = { marginBottom: 18 };
-  const labelEl = (text) => (
-    <label
-      style={{
-        display: "block",
-        fontSize: 12,
-        fontWeight: 600,
-        color: "#475569",
-        marginBottom: 6,
-        letterSpacing: "0.03em",
-        textTransform: "uppercase",
-        fontFamily: '"DM Sans", sans-serif',
-      }}
-    >
-      {text}
+  const labelEl = (text, hint) => (
+    <label style={{ display: "block", marginBottom: 6 }}>
+      <span style={{
+        display: "block", fontSize: 12, fontWeight: 600, color: "#475569",
+        letterSpacing: "0.03em", textTransform: "uppercase", fontFamily: '"DM Sans", sans-serif',
+      }}>{text}</span>
+      {hint && <span style={{ display: "block", fontSize: 11.5, color: AIO_C.muted, fontWeight: 400, textTransform: "none", letterSpacing: 0, marginTop: 2, lineHeight: 1.45 }}>{hint}</span>}
     </label>
   );
   const inputBase = {
-    width: "100%",
-    border: "1px solid #e2e8f0",
-    borderRadius: 8,
-    padding: "10px 14px",
-    fontSize: 14,
-    color: "#0f172a",
-    background: "#f8fafc",
-    outline: "none",
-    boxSizing: "border-box",
-    fontFamily: '"Inter", sans-serif',
-    transition: "border-color 0.15s, box-shadow 0.15s",
+    width: "100%", border: `1px solid ${AIO_C.line}`, borderRadius: 8, padding: "10px 14px",
+    fontSize: 14, color: AIO_C.ink, background: AIO_C.wash, outline: "none",
+    boxSizing: "border-box", fontFamily: '"Inter", sans-serif',
   };
+  const sectionHead = (n, text) => (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8, margin: "0 0 14px",
+      paddingBottom: 8, borderBottom: `1px solid #f1f5f9`,
+    }}>
+      <span style={{
+        width: 20, height: 20, borderRadius: 5, background: AIO_C.primary, color: "#fff",
+        fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: '"DM Sans", sans-serif', flexShrink: 0,
+      }}>{n}</span>
+      <span style={{
+        fontSize: 11, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+        letterSpacing: "0.1em", fontFamily: '"DM Sans", sans-serif',
+      }}>{text}</span>
+    </div>
+  );
+
+  const activeRunObj = result && result.runs && result.runs.length > 0 ? result.runs[activeRun] : null;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "linear-gradient(135deg, #f0f4f8 0%, #e8eef5 50%, #f0f4f8 100%)",
-        padding: "0 0 60px",
-        fontFamily: "'Public Sans', 'DM Sans', system-ui, sans-serif",
-      }}
-    >
-      {/* -- Sticky page header -- */}
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 10,
-          background: "#fff",
-          borderBottom: "1px solid #e2e8f0",
-          boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
-          padding: "0 16px",
-        }}
-      >
-        <div style={{ maxWidth: 740, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56 }}>
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #f0f4f8 0%, #e8eef5 50%, #f0f4f8 100%)",
+      padding: "0 0 60px", fontFamily: "'Public Sans', 'DM Sans', system-ui, sans-serif",
+    }}>
+      {/* -- Sticky page header (unchanged) -- */}
+      <div style={{
+        position: "sticky", top: 0, zIndex: 10, background: "#fff",
+        borderBottom: `1px solid ${AIO_C.line}`, boxShadow: "0 1px 8px rgba(0,0,0,0.06)", padding: "0 16px",
+      }}>
+        <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                background: "linear-gradient(135deg, #1a3a5c 0%, #2d5a8e 100%)",
-                borderRadius: 9,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                boxShadow: "0 2px 6px rgba(26,58,92,0.2)",
-              }}
-            >
+            <div style={{
+              width: 36, height: 36, background: "linear-gradient(135deg, #1a3a5c 0%, #2d5a8e 100%)",
+              borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center",
+              flexShrink: 0, boxShadow: "0 2px 6px rgba(26,58,92,0.2)",
+            }}>
               <span style={{ color: "#fff", fontSize: 17, fontWeight: 700, fontFamily: '"DM Sans", sans-serif' }}>C</span>
             </div>
             <div>
-              <span
-                style={{
-                  fontSize: 18,
-                  fontWeight: 600,
-                  color: "#1a3a5c",
-                  letterSpacing: "-0.02em",
-                  fontFamily: '"DM Sans", sans-serif',
-                  lineHeight: 1,
-                }}
-              >
+              <span style={{ fontSize: 18, fontWeight: 600, color: AIO_C.primary, letterSpacing: "-0.02em", fontFamily: '"DM Sans", sans-serif', lineHeight: 1 }}>
                 CogentCR
+              </span>
+              <span style={{ marginLeft: 9, fontSize: 10, fontWeight: 700, color: AIO_C.claim, background: AIO_C.claimBg, border: `1px solid ${AIO_C.claimLine}`, borderRadius: 5, padding: "2px 7px", textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: '"DM Sans", sans-serif' }}>
+                AI-only demo
               </span>
             </div>
           </div>
-
-          {/* User info + logout */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13, color: "#64748b" }}>
-              {user.name || user.email}
-            </span>
-            <button
-              onClick={handleLogout}
-              style={{
-                background: "none",
-                border: "1px solid #e2e8f0",
-                borderRadius: 6,
-                padding: "5px 12px",
-                fontSize: 12,
-                fontWeight: 600,
-                color: "#475569",
-                cursor: "pointer",
-                fontFamily: '"DM Sans", sans-serif',
-              }}
-            >
-              Log out
-            </button>
+            <span style={{ fontSize: 13, color: AIO_C.muted }}>{user.name || user.email}</span>
+            <button onClick={handleLogout} style={{
+              background: "none", border: `1px solid ${AIO_C.line}`, borderRadius: 6, padding: "5px 12px",
+              fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: '"DM Sans", sans-serif',
+            }}>Log out</button>
           </div>
         </div>
       </div>
 
-      <div style={{ maxWidth: 740, margin: "0 auto", padding: "28px 16px 0" }}>
+      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "24px 16px 0" }}>
 
-        {/* -- Input card -- */}
-        <div style={{ ...card, padding: "28px 32px" }}>
-          <h2
-            style={{
-              margin: "0 0 22px",
-              fontSize: 11,
-              fontWeight: 700,
-              color: "#64748b",
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
-              fontFamily: '"DM Sans", sans-serif',
-              paddingBottom: 12,
-              borderBottom: "1px solid #f1f5f9",
-            }}
-          >
-            Review Details
-          </h2>
-
-          {/* Review Type */}
-          <div style={fieldWrap}>
-            {labelEl("Review Type")}
-            <select
-              value={reviewType}
-              onChange={(e) => setReviewType(e.target.value)}
-              style={{ ...inputBase, cursor: "pointer" }}
-            >
-              <option value="initial">Initial</option>
-              <option value="subsequent">Subsequent</option>
-            </select>
+        <div style={{ ...card, padding: "24px 28px" }}>
+          <div style={{ fontSize: 12.5, color: AIO_C.muted, lineHeight: 1.6, marginBottom: 20, paddingBottom: 16, borderBottom: `1px solid #f1f5f9` }}>
+            No rules engine, no benchmark table, no supplied citation. Extraction, a shape check, then
+            one model call that produces the determination and the note together and must state the
+            guideline and visit benchmarks it applied.
           </div>
 
-          {/* Discipline */}
-          <div style={fieldWrap}>
-            {labelEl("Discipline")}
-            <select
-              value={therapyType}
-              onChange={(e) => setTherapyType(e.target.value)}
-              style={{ ...inputBase, cursor: "pointer" }}
-            >
-              <option value="PT">PT — Physical Therapy</option>
-              <option value="OT">OT — Occupational Therapy</option>
-              <option value="ST">ST — Speech-Language Therapy</option>
-            </select>
-          </div>
-
-          {/* Insurance Plan */}
-          {plans.length > 0 && (
-            <div style={fieldWrap}>
-              {labelEl("Insurance Plan")}
-              <select
-                value={selectedPlanId}
-                onChange={(e) => setSelectedPlanId(e.target.value)}
-                style={{ ...inputBase, cursor: "pointer" }}
-              >
-                <option value="">Default Plan (no override)</option>
-                {plans.map(p => (
-                  <option key={p.plan_id} value={p.plan_id}>
-                    {p.plan_name} — {p.payer}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* HPI / Care History */}
-          <div style={fieldWrap}>
-            {labelEl("HPI / Care History")}
-            <textarea
-              value={hpi}
-              onChange={(e) => setHpi(e.target.value)}
-              placeholder="e.g. 57 YO M, dx M25.561 R shoulder partial supraspinatus tear, fall injury 2/2026. IE 4/7/2026. 8v prev approved at 2x/wk x 4wks (PD for frequency). Initial request."
-              rows={4}
-              style={{ ...inputBase, resize: "vertical", lineHeight: 1.6 }}
-            />
-          </div>
-
-          {/* Requested Visits */}
-          <div style={fieldWrap}>
-            {labelEl("Requested Visits")}
-            <input
-              type="number"
-              min="0"
-              value={requestedVisits}
-              onChange={(e) => setRequestedVisits(e.target.value)}
-              placeholder="e.g. 12"
-              style={inputBase}
-            />
-          </div>
-
-          {/* Prior Review Note — SUB only */}
-          {reviewType === "subsequent" && (
-            <div style={fieldWrap}>
-              {labelEl("Prior Review Note (paste previous determination here)")}
-              <textarea
-                value={priorNote}
-                onChange={(e) => setPriorNote(e.target.value)}
-                placeholder="Paste the prior reviewer note here — CogentCR will use it to compare against the current documentation."
-                rows={5}
-                style={{ ...inputBase, resize: "vertical", lineHeight: 1.6 }}
-              />
-            </div>
-          )}
-
-          {/* PDF Upload — multi-file */}
-          <div style={fieldWrap}>
-            {labelEl("Supporting Documents (PDF) — up to 10 files *")}
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "14px 18px",
-                border: "1.5px dashed #cbd5e1",
-                borderRadius: 10,
-                cursor: "pointer",
-                background: "#f8fafc",
-                fontSize: 14,
-                color: files.length > 0 ? "#1a3a5c" : "#64748b",
-                transition: "border-color 0.15s, background 0.15s",
-              }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: files.length > 0 ? "#1a3a5c" : "#94a3b8" }}>
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              <span style={{ fontFamily: '"Inter", sans-serif', fontSize: 14 }}>
-                {files.length === 0
-                  ? "Click to upload PDF(s)..."
-                  : files.length === 1
-                  ? files[0].name
-                  : `${files.length} files selected`}
-              </span>
-              <input
-                type="file"
-                accept="application/pdf"
-                multiple
-                onChange={(e) => setFiles(Array.from(e.target.files || []))}
-                style={{ display: "none" }}
-              />
-            </label>
-
-            {/* File list when multiple selected */}
-            {files.length > 1 && (
-              <div style={{ marginTop: 8 }}>
-                {files.map((f, i) => (
-                  <div
-                    key={i}
+          {/* SECTION 1 — CASE CONTEXT */}
+          {sectionHead(1, "Case context")}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 16, marginBottom: 24 }}>
+            <div>
+              {labelEl("Review type")}
+              <div style={{ display: "flex", gap: 8 }}>
+                {["initial", "subsequent"].map((t) => (
+                  <button key={t} type="button" onClick={() => setReviewType(t)}
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "4px 0",
-                      fontSize: 13,
-                      color: "#374151",
-                    }}
-                  >
-                    <span style={{ color: "#6b7280", fontSize: 11 }}>PDF</span>
-                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {f.name}
-                    </span>
-                    <span style={{ color: "#9ca3af", fontSize: 11, flexShrink: 0 }}>
-                      {(f.size / 1024).toFixed(0)} KB
-                    </span>
-                  </div>
+                      flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
+                      border: `1.5px solid ${reviewType === t ? AIO_C.primary : AIO_C.line}`,
+                      background: reviewType === t ? AIO_C.primary : AIO_C.white,
+                      color: reviewType === t ? "#fff" : "#475569",
+                      fontSize: 13, fontWeight: 600, fontFamily: '"DM Sans", sans-serif',
+                      textTransform: "capitalize",
+                    }}>{t}</button>
                 ))}
               </div>
-            )}
+            </div>
+            <div>
+              {labelEl("Requested visits *")}
+              <input type="number" min="0" value={requestedVisits}
+                onChange={(e) => setRequestedVisits(e.target.value)}
+                placeholder="e.g. 14" style={inputBase} />
+            </div>
+            <div>
+              {labelEl("Requested frequency / week", "Leave blank to read from the plan of care.")}
+              <input type="number" min="0" value={requestedFrequency}
+                onChange={(e) => setRequestedFrequency(e.target.value)}
+                placeholder="e.g. 2" style={inputBase} />
+            </div>
           </div>
 
-          {/* Error banner */}
-          {error && (
-            <div
-              style={{
-                background: "#fef2f2",
-                border: "1px solid #fca5a5",
-                borderRadius: 7,
-                padding: "10px 14px",
-                color: "#991b1b",
-                fontSize: 14,
-                marginBottom: 18,
-              }}
-            >
-              {error}
+          {/* SECTION 2 — CLINICAL SOURCE */}
+          {sectionHead(2, "Clinical source — any, all, or none")}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 24 }}>
+            <div>
+              {labelEl("Upload documents", "One or more PDFs.")}
+              <input type="file" accept="application/pdf" multiple
+                onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                style={{ ...inputBase, padding: "9px 12px", fontSize: 12.5, cursor: "pointer" }} />
+              {files.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 11.5, color: AIO_C.muted, lineHeight: 1.6 }}>
+                  {files.map((f, i) => <div key={i}>• {f.originalname || f.name}</div>)}
+                </div>
+              )}
+            </div>
+            <div>
+              {labelEl("Paste clinical text", "Paste clinical documentation directly — for example, copied from Auth Intelligence.")}
+              <textarea value={pastedText} onChange={(e) => setPastedText(e.target.value)} rows={5}
+                placeholder="Paste the clinical narrative here…"
+                style={{ ...inputBase, resize: "vertical", lineHeight: 1.55, fontSize: 12.5 }} />
+            </div>
+          </div>
+
+          {/* SECTION 3 — MANUAL OVERRIDES */}
+          <button type="button" onClick={() => setShowOverrides((s) => !s)}
+            style={{
+              width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer",
+              padding: 0, marginBottom: showOverrides ? 14 : 22,
+            }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 8, borderBottom: `1px solid #f1f5f9` }}>
+              <span style={{
+                width: 20, height: 20, borderRadius: 5, background: AIO_C.primary, color: "#fff",
+                fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
+                fontFamily: '"DM Sans", sans-serif', flexShrink: 0,
+              }}>3</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: '"DM Sans", sans-serif' }}>
+                {showOverrides ? "▾" : "▸"} Override what the documents say
+              </span>
+            </div>
+          </button>
+          {showOverrides && (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 12, color: AIO_C.muted, marginBottom: 14, lineHeight: 1.55 }}>
+                Anything entered here wins over extracted values.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+                <div>
+                  {labelEl("Diagnosis code")}
+                  <input value={diagnosisCodeOverride}
+                    onChange={(e) => setDiagnosisCode(e.target.value)}
+                    placeholder="e.g. S83.101" style={inputBase} />
+                </div>
+                <div>
+                  {labelEl("Visits approved to date",
+                    "If this is a continuation of care submitted as a new request — for example after a prior authorization expired — enter the visits already approved.")}
+                  <input type="number" min="0" value={visitsToDateOverride}
+                    onChange={(e) => { setVisitsToDate(e.target.value); setVtdSource("manual"); }}
+                    placeholder="e.g. 14" style={inputBase} />
+                  {vtdSource === "prior_note" && visitsToDateOverride !== "" && (
+                    <div style={{ marginTop: 5, fontSize: 11, color: AIO_C.green, fontWeight: 600 }}>
+                      ✓ Accepted from the prior reviewer's note.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
-          {/* Submit button */}
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            style={{
-              background: loading ? "#94a3b8" : "linear-gradient(135deg, #1a3a5c 0%, #2d5a8e 100%)",
-              color: "#fff",
-              border: "none",
-              borderRadius: 8,
-              padding: "11px 28px",
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: loading ? "not-allowed" : "pointer",
-              letterSpacing: "0.02em",
-              transition: "opacity 0.2s",
-              fontFamily: '"DM Sans", sans-serif',
-              boxShadow: loading ? "none" : "0 2px 10px rgba(26,58,92,0.25)",
-            }}
-          >
-            Generate Review
-          </button>
+          {/* SECTION 4 — PRIOR DETERMINATION (subsequent only) */}
+          {reviewType === "subsequent" && (
+            <div style={{ marginBottom: 22 }}>
+              {sectionHead(4, "Prior determination")}
+              {labelEl("Paste the prior reviewer's determination note, if available",
+                "Used for comparison and to check whether a previously stated plan has been met.")}
+              <textarea value={priorReviewerNote} onChange={(e) => setPriorReviewerNote(e.target.value)} rows={5}
+                placeholder="e.g. Approved 14 visits at 2x/week x 7 weeks…"
+                style={{ ...inputBase, resize: "vertical", lineHeight: 1.55, fontSize: 12.5 }} />
+
+              {result && result.priorNoteSuggestion && (
+                <div style={{
+                  marginTop: 12, padding: "12px 14px", background: AIO_C.amberBg,
+                  border: `1px solid ${AIO_C.amberLine}`, borderRadius: 8,
+                  display: "flex", alignItems: "flex-start", gap: 14, justifyContent: "space-between",
+                }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: AIO_C.amber, marginBottom: 4 }}>
+                      {result.priorNoteSuggestion.message}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#78350f", fontStyle: "italic", lineHeight: 1.5 }}>
+                      “…{result.priorNoteSuggestion.excerpt}…”
+                    </div>
+                  </div>
+                  <button type="button" onClick={acceptSuggestion}
+                    style={{
+                      flexShrink: 0, padding: "8px 16px", borderRadius: 7, border: "none",
+                      background: AIO_C.amber, color: "#fff", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer", fontFamily: '"DM Sans", sans-serif',
+                    }}>Accept</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div style={{
+              marginBottom: 16, padding: "12px 16px", background: AIO_C.redBg,
+              border: `1px solid ${AIO_C.redLine}`, borderRadius: 8, fontSize: 13, color: "#dc2626",
+            }}>{error}</div>
+          )}
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button type="button" onClick={() => run(1)} disabled={loading}
+              style={{
+                flex: 1, padding: "13px 20px", borderRadius: 9, border: "none",
+                background: loading ? AIO_C.faint : AIO_C.primary, color: "#fff",
+                fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer",
+                fontFamily: '"DM Sans", sans-serif',
+              }}>{loading ? "Running…" : "Run"}</button>
+            <button type="button" onClick={() => run(3)} disabled={loading}
+              style={{
+                flex: 1, padding: "13px 20px", borderRadius: 9,
+                border: `1.5px solid ${loading ? AIO_C.line : AIO_C.primary}`,
+                background: "#fff", color: loading ? AIO_C.faint : AIO_C.primary,
+                fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer",
+                fontFamily: '"DM Sans", sans-serif',
+              }}>{loading ? "Running…" : "Run 3×"}</button>
+          </div>
+          {loading && (
+            <div style={{ marginTop: 12, fontSize: 12, color: AIO_C.muted, textAlign: "center" }}>
+              Extraction runs once; each determination call takes roughly a minute.
+            </div>
+          )}
         </div>
 
-        {/* -- Spinner -- */}
-        {loading && <Spinner />}
+        {/* -- OUTPUT -- */}
+        {result && (
+          <>
+            {result.validation && !result.validation.passed && (
+              <div style={{ ...card, padding: "18px 22px", borderColor: AIO_C.amberLine, background: AIO_C.amberBg }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: AIO_C.amber, fontFamily: "'Fraunces', Georgia, serif", marginBottom: 4 }}>
+                  Pend — validation did not pass
+                </div>
+                <div style={{ fontSize: 12.5, color: "#78350f", marginBottom: 10, lineHeight: 1.55 }}>
+                  The determination call was not made. A determination that cannot be defended is a pend,
+                  not an error.
+                </div>
+                {result.validation.failures.map((f, i) => (
+                  <div key={i} style={{ fontSize: 12.5, color: "#78350f", lineHeight: 1.6 }}>
+                    • <strong>{f.check}</strong> — {f.message}
+                  </div>
+                ))}
+              </div>
+            )}
 
-        {/* -- Output card -- */}
-        {sections && !loading && (
-          <div style={card}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "14px 28px",
-                background: "linear-gradient(135deg, #1a3a5c 0%, #2d5a8e 100%)",
-              }}
-            >
-              <span style={{ fontSize: 12, fontWeight: 700, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase", fontFamily: '"DM Sans", sans-serif' }}>
-                Generated Review
-              </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={handleExport}
-                  title="Export the full letterhead-formatted determination"
-                  style={{
-                    background: "rgba(255,255,255,0.12)",
-                    border: "1px solid rgba(255,255,255,0.25)",
-                    borderRadius: 6,
-                    padding: "6px 14px",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: "#fff",
-                    cursor: "pointer",
-                  }}
-                >
-                  Export Full Letter .txt
-                </button>
+            {result.runs && result.runs.length > 1 && (
+              <div style={{ ...card, padding: "12px 18px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: '"DM Sans", sans-serif' }}>
+                  Viewing run
+                </span>
+                {result.runs.map((rn, i) => (
+                  <button key={i} type="button" onClick={() => setActiveRun(i)}
+                    style={{
+                      padding: "6px 14px", borderRadius: 7, cursor: "pointer",
+                      border: `1.5px solid ${activeRun === i ? AIO_C.primary : AIO_C.line}`,
+                      background: activeRun === i ? AIO_C.primary : "#fff",
+                      color: activeRun === i ? "#fff" : "#475569",
+                      fontSize: 12, fontWeight: 700, fontFamily: '"DM Sans", sans-serif',
+                    }}>
+                    {i + 1}{rn.ok ? "" : " ⚠"}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 20, alignItems: "start" }}>
+              <div style={{ ...card, padding: "20px 22px", marginBottom: 0 }}>
+                <h2 style={{
+                  margin: "0 0 16px", fontSize: 11, fontWeight: 700, color: AIO_C.muted,
+                  textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: '"DM Sans", sans-serif',
+                }}>Extraction</h2>
+                <ExtractionPanel result={result} />
+              </div>
+
+              <div style={{ ...card, padding: "20px 22px", marginBottom: 0 }}>
+                <h2 style={{
+                  margin: "0 0 16px", fontSize: 11, fontWeight: 700, color: AIO_C.muted,
+                  textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: '"DM Sans", sans-serif',
+                }}>Determination and note</h2>
+                {activeRunObj
+                  ? <DeterminationPanel result={result} run={activeRunObj} />
+                  : <div style={{ fontSize: 12.5, color: AIO_C.faint, fontStyle: "italic" }}>
+                      No determination was produced for this case.
+                    </div>}
               </div>
             </div>
 
-            <DocumentSummary summary={documentSummary} />
-
-            {/* ISSUE 3 — Requested (provider) vs. Recommended (ruling) side-by-side.
-                This is the actual live demo UR form output (the legacy single-page
-                App() form) -- distinct from URFormEmbed, the reviewer-tools-tab copy
-                of this same form reachable only from inside ReviewerShell. Both got
-                this fix; this is the one demo-ur-only's App() actually renders. */}
-            {ruling && reviewMetrics && (() => {
-              const reqText = [reviewMetrics.requestedFrequency, reviewMetrics.poc].filter(Boolean).join(" ");
-              const { freqPerWeek: reqFreq, durationWeeks: reqWeeks } = parseRequestedFreqWeeks(reqText);
-              return (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: "16px 28px 0" }}>
-                  <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontFamily: '"DM Sans", sans-serif' }}>Requested (provider)</div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a", fontFamily: '"DM Sans", sans-serif' }}>
-                      {formatVisitLine(reviewMetrics.requestedVisits, reqFreq, reqWeeks)}
-                    </div>
-                  </div>
-                  <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontFamily: '"DM Sans", sans-serif' }}>Recommended</div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a", fontFamily: '"DM Sans", sans-serif' }}>
-                      {formatVisitLine(ruling.visitsApproved, ruling.approvedFrequency, ruling.approvedDurationWeeks)}
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* UNF panel — same note-builder as the main cockpit and URFormEmbed
-                (src/utils/unfNote.js), replacing the old section-by-section
-                review display so this surface can't drift from the others. */}
-            {ruling && reviewMetrics && (
-              <div style={{ padding: "0 28px 20px" }}>
-                <UNFNoteBox
-                  hpi={hpi}
-                  autoHpiData={{
-                    ...(hpiData || {}),
-                    totalApprovedVisits: reviewType === "subsequent" ? (reviewMetrics.previouslyApprovedVisits ?? null) : null,
-                    isSubsequent: reviewType === "subsequent",
-                  }}
-                  clinicalSummary={clinicalSummary}
-                  poc={reviewMetrics.poc}
-                  requestedVisits={reviewMetrics.requestedVisits}
-                  determinationLine={ruling.determinationLine}
-                  approvedVisits={ruling.visitsApproved}
-                  exportFileName={`UNF_${reviewMetrics.primaryDiagnosisCode || "note"}.txt`}
-                />
-              </div>
-            )}
-          </div>
+            <TelemetryStrip telemetry={result.telemetry} visitsToDateSource={result.visitsToDateSource} />
+          </>
         )}
-
-        {/* -- Review History -- */}
-        <ReviewHistory
-          refreshTrigger={historyRefresh}
-          token={token}
-          onAuthError={handleAuthError}
-        />
-
       </div>
     </div>
   );
