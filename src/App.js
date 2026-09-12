@@ -8810,7 +8810,7 @@ function App() {
               )}
             </div>
             <div>
-              {labelEl("Paste clinical text", "Paste clinical documentation directly — for example, copied from Auth Intelligence.")}
+              {labelEl("Paste clinical text", "Paste clinical documentation directly.")}
               <textarea value={pastedText} onChange={(e) => setPastedText(e.target.value)} rows={5}
                 placeholder="Paste the clinical narrative here…"
                 style={{ ...inputBase, resize: "vertical", lineHeight: 1.55, fontSize: 12.5 }} />
