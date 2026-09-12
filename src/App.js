@@ -8166,6 +8166,488 @@ function TelemetryStrip({ telemetry, visitsToDateSource }) {
   );
 }
 
+/* ── PHASE 4 — THE INSTRUMENTATION ─────────────────────────────────────────
+ *
+ * Everything above this is scaffolding for what follows. Run 3x submits the
+ * same case three times; extraction runs ONCE server-side and is reused for
+ * all three determination calls, so what is measured here is variance in the
+ * reasoning step, not in the reading step.
+ *
+ * There is no temperature to hold at zero — sampling parameters are removed on
+ * current-generation models — so this is real variance, not a setting being
+ * confirmed.
+ */
+
+// The fields compared across runs. Order matters: this is the display order in
+// the side-by-side table, and the first four are what the headline judges.
+const COMPARE_FIELDS = [
+  { key: "determination",          label: "Determination",      short: "determination",              headline: true,  fmt: (v) => (DET_STYLE[v] ? DET_STYLE[v].label : String(v)) },
+  { key: "approvedVisits",         label: "Approved visits",    short: "the visit count",            headline: true },
+  { key: "approvedFrequency",      label: "Frequency / week",   short: "frequency",                  headline: true },
+  { key: "approvedDurationWeeks",  label: "Duration (weeks)",   short: "duration",                   headline: true },
+  { key: "severityAssigned",       label: "Severity",           short: "severity",                   headline: true },
+  { key: "benchmarkTypicalVisits", label: "Benchmark — typical",     short: "the typical-visit benchmark", headline: true, benchmark: true },
+  { key: "benchmarkMaxVisits",     label: "Benchmark — episode max", short: "the episode-max benchmark",   headline: true, benchmark: true },
+  { key: "benchmarkMaxFrequency",  label: "Benchmark — max freq/wk", short: "the max-frequency benchmark", headline: true, benchmark: true },
+  { key: "guidelineApplied",       label: "Guideline named",    short: "the guideline named",        headline: false, benchmark: true, long: true },
+  { key: "ruleApplied",            label: "Rule applied",       short: "the rule cited",             headline: false, long: true },
+];
+
+/** Count how many runs share the most common value of a field. */
+function agreementFor(runs, key) {
+  const values = runs.map((r) => (r.ok ? r[key] : "__ERROR__"));
+  const counts = new Map();
+  for (const v of values) {
+    const k = JSON.stringify(v);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  let bestKey = null, best = 0;
+  for (const [k, c] of counts.entries()) if (c > best) { best = c; bestKey = k; }
+  return {
+    unanimous: counts.size === 1,
+    distinct: counts.size,
+    majority: best,
+    total: values.length,
+    modeValue: bestKey === null ? null : JSON.parse(bestKey),
+  };
+}
+
+/**
+ * The headline. One line saying whether the runs agreed.
+ *
+ * This is the single most important output of the build, so it is deliberately
+ * blunt: either they were identical or it names what moved.
+ */
+function buildAgreement(runs) {
+  const n = runs.length;
+  // Agreement is measured across runs that actually returned something. An
+  // errored run otherwise makes every single field look like it "differed",
+  // which buries the real signal under noise. Errors are reported separately.
+  const ok = runs.filter((r) => r.ok);
+  const m = ok.length;
+  const per = {};
+  for (const f of COMPARE_FIELDS) per[f.key] = agreementFor(ok.length ? ok : runs, f.key);
+
+  const failed = n - m;
+  const headlineFields = COMPARE_FIELDS.filter((f) => f.headline);
+  const drifted = headlineFields.filter((f) => !per[f.key].unanimous);
+  const allIdentical = drifted.length === 0 && failed === 0;
+
+  let headline;
+  if (m === 0) {
+    headline = `${n}/${n} runs failed to return a determination.`;
+  } else if (allIdentical) {
+    headline = `${n}/${n} identical — same determination, visit count, severity and stated benchmarks.`;
+  } else {
+    const det = per.determination;
+    // Lead with what held, then name what moved. A reviewer scanning this wants
+    // the reassuring half and the worrying half in that order. The visit count
+    // is folded into the lead ONLY when the determination was also unanimous —
+    // otherwise "2/3 agreed on determination and the visit count" would imply
+    // the same two runs agreed on both, which is not what was measured.
+    const held = ["determination"];
+    if (det.unanimous && per.approvedVisits.unanimous) held.push("the visit count");
+    const lead = `${det.majority}/${m} agreed on ${held.join(" and ")}`;
+
+    const moved = drifted
+      .filter((f) => f.key !== "determination" && !(held.length > 1 && f.key === "approvedVisits"))
+      .map((f) => f.short || f.label.toLowerCase());
+    const movedText = moved.length === 0 ? ""
+      : moved.length === 1 ? `${moved[0]} differed`
+      : `${moved.slice(0, -1).join(", ")} and ${moved[moved.length - 1]} differed`;
+
+    const tail = [];
+    if (movedText) tail.push(movedText);
+    if (failed > 0) tail.push(`${failed} run${failed === 1 ? "" : "s"} errored`);
+    headline = tail.length ? `${lead}; ${tail.join("; ")}.` : `${lead}.`;
+  }
+
+  const benchmarkFields = COMPARE_FIELDS.filter((f) => f.benchmark);
+  return {
+    headline,
+    allIdentical,
+    perField: per,
+    failed,
+    benchmarksStable: benchmarkFields.every((f) => per[f.key].unanimous),
+    benchmarkNumbersStable: benchmarkFields.filter((f) => !f.long).every((f) => per[f.key].unanimous),
+  };
+}
+
+/* ── WORD-LEVEL DIFF ───────────────────────────────────────────────────────
+ * Standard LCS over whitespace-delimited tokens. Notes run a few hundred words,
+ * so the O(n*m) table is trivially affordable and gives an exact diff rather
+ * than a heuristic one.
+ */
+function tokenize(s) {
+  return String(s || "").split(/(\s+)/).filter((t) => t.length > 0);
+}
+
+function wordDiff(a, b) {
+  const A = tokenize(a), B = tokenize(b);
+  const n = A.length, m = B.length;
+  // lcs[i][j] = length of LCS of A[i..] and B[j..]
+  const lcs = new Uint32Array((n + 1) * (m + 1));
+  const at = (i, j) => i * (m + 1) + j;
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[at(i, j)] = A[i] === B[j]
+        ? lcs[at(i + 1, j + 1)] + 1
+        : Math.max(lcs[at(i + 1, j)], lcs[at(i, j + 1)]);
+    }
+  }
+  const out = [];
+  const push = (type, text) => {
+    const last = out[out.length - 1];
+    if (last && last.type === type) last.text += text;
+    else out.push({ type, text });
+  };
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { push("same", A[i]); i++; j++; }
+    else if (lcs[at(i + 1, j)] >= lcs[at(i, j + 1)]) { push("del", A[i]); i++; }
+    else { push("add", B[j]); j++; }
+  }
+  while (i < n) { push("del", A[i]); i++; }
+  while (j < m) { push("add", B[j]); j++; }
+  return out;
+}
+
+function NoteDiff({ base, other, label }) {
+  const parts = useMemo(() => wordDiff(base, other), [base, other]);
+  const changed = parts.filter((p) => p.type !== "same").length;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{
+        fontSize: 10, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+        letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif", marginBottom: 5,
+      }}>
+        {label} {changed === 0
+          ? <span style={{ color: AIO_C.green }}>— byte-identical to run 1</span>
+          : <span style={{ color: AIO_C.amber }}>— {changed} change{changed === 1 ? "" : "s"}</span>}
+      </div>
+      {changed > 0 && (
+        <div style={{
+          border: `1px solid ${AIO_C.line}`, borderRadius: 8, padding: 12, maxHeight: 300,
+          overflow: "auto", background: AIO_C.white, fontSize: 12,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          lineHeight: 1.7, whiteSpace: "pre-wrap", wordBreak: "break-word",
+        }}>
+          {parts.map((p, i) =>
+            p.type === "same"
+              ? <span key={i} style={{ color: "#94a3b8" }}>{p.text}</span>
+              : p.type === "del"
+                ? <span key={i} style={{ background: "#fee2e2", color: "#991b1b", textDecoration: "line-through" }}>{p.text}</span>
+                : <span key={i} style={{ background: "#dcfce7", color: "#166534" }}>{p.text}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── RUN COMPARISON ────────────────────────────────────────────────────────── */
+
+function RunComparison({ runs }) {
+  const agree = useMemo(() => buildAgreement(runs), [runs]);
+  const n = runs.length;
+
+  const cellBg = (unanimous) => (unanimous ? "transparent" : AIO_C.amberBg);
+
+  return (
+    <div style={{
+      background: "#fff", border: `1px solid ${AIO_C.line}`, borderRadius: 12,
+      marginBottom: 20, boxShadow: "0 2px 12px rgba(0,0,0,0.07)", overflow: "hidden",
+    }}>
+      {/* THE HEADLINE */}
+      <div style={{
+        padding: "16px 22px",
+        background: agree.allIdentical ? AIO_C.greenBg : AIO_C.amberBg,
+        borderBottom: `1.5px solid ${agree.allIdentical ? AIO_C.greenLine : AIO_C.amberLine}`,
+      }}>
+        <div style={{
+          fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase",
+          fontFamily: "'DM Sans', sans-serif", marginBottom: 4,
+          color: agree.allIdentical ? AIO_C.green : AIO_C.amber,
+        }}>
+          Self-consistency — {n} runs, one extraction
+        </div>
+        <div style={{
+          fontSize: 19, fontWeight: 800, lineHeight: 1.3,
+          fontFamily: "'Fraunces', Georgia, serif",
+          color: agree.allIdentical ? "#14532d" : "#78350f",
+        }}>
+          {agree.headline}
+        </div>
+        {!agree.benchmarkNumbersStable && (
+          <div style={{ marginTop: 8, fontSize: 12.5, color: "#78350f", lineHeight: 1.55 }}>
+            The model stated <strong>different visit benchmarks for the same diagnosis on
+            different runs</strong>. Everything downstream of a benchmark is unstable when
+            this happens.
+          </div>
+        )}
+        {agree.benchmarkNumbersStable && !agree.benchmarksStable && (
+          <div style={{ marginTop: 8, fontSize: 12.5, color: "#78350f", lineHeight: 1.55 }}>
+            Benchmark figures held steady, but the guideline was named differently between runs.
+          </div>
+        )}
+      </div>
+
+      {/* SIDE BY SIDE */}
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              <th style={{
+                textAlign: "left", padding: "9px 14px", background: AIO_C.wash,
+                borderBottom: `1px solid ${AIO_C.line}`, fontSize: 10, fontWeight: 700,
+                color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.06em",
+                fontFamily: "'DM Sans', sans-serif", width: 170, position: "sticky", left: 0,
+              }} />
+              {runs.map((r, i) => (
+                <th key={i} style={{
+                  textAlign: "left", padding: "9px 14px", background: AIO_C.wash,
+                  borderBottom: `1px solid ${AIO_C.line}`, fontSize: 11, fontWeight: 700,
+                  color: AIO_C.primary, fontFamily: "'DM Sans', sans-serif", minWidth: 170,
+                }}>
+                  Run {i + 1}{!r.ok && <span style={{ color: AIO_C.red }}> ⚠ errored</span>}
+                </th>
+              ))}
+              <th style={{
+                textAlign: "left", padding: "9px 14px", background: AIO_C.wash,
+                borderBottom: `1px solid ${AIO_C.line}`, fontSize: 10, fontWeight: 700,
+                color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.06em",
+                fontFamily: "'DM Sans', sans-serif", width: 78,
+              }}>Agree</th>
+            </tr>
+          </thead>
+          <tbody>
+            {COMPARE_FIELDS.map((f) => {
+              const a = agree.perField[f.key];
+              return (
+                <tr key={f.key}>
+                  <td style={{
+                    padding: "8px 14px", borderBottom: `1px solid ${AIO_C.wash}`,
+                    color: AIO_C.muted, fontSize: 11, verticalAlign: "top",
+                    fontFamily: "'DM Sans', sans-serif", position: "sticky", left: 0, background: "#fff",
+                  }}>{f.label}</td>
+                  {runs.map((r, i) => (
+                    <td key={i} style={{
+                      padding: "8px 14px", borderBottom: `1px solid ${AIO_C.wash}`,
+                      background: cellBg(a.unanimous), verticalAlign: "top",
+                      color: r.ok ? AIO_C.ink : AIO_C.faint,
+                      fontWeight: f.key === "determination" ? 700 : 400,
+                      lineHeight: 1.5,
+                      maxWidth: f.long ? 320 : undefined,
+                      fontSize: f.long ? 11.5 : 12.5,
+                    }}>
+                      {r.ok
+                        ? (f.fmt ? f.fmt(r[f.key]) : (r[f.key] == null ? "—" : String(r[f.key])))
+                        : "—"}
+                    </td>
+                  ))}
+                  <td style={{
+                    padding: "8px 14px", borderBottom: `1px solid ${AIO_C.wash}`,
+                    verticalAlign: "top", fontWeight: 700, fontSize: 11.5,
+                    color: a.unanimous ? AIO_C.green : AIO_C.amber,
+                  }}>
+                    {a.unanimous ? `${n}/${n}` : `${a.majority}/${n}`}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr>
+              <td style={{
+                padding: "8px 14px", borderBottom: `1px solid ${AIO_C.wash}`, color: AIO_C.muted,
+                fontSize: 11, verticalAlign: "top", fontFamily: "'DM Sans', sans-serif",
+                position: "sticky", left: 0, background: "#fff",
+              }}>Guardrail failures</td>
+              {runs.map((r, i) => {
+                const errs = (r.guardrails || []).filter((g) => g.severity === "error");
+                return (
+                  <td key={i} style={{ padding: "8px 14px", borderBottom: `1px solid ${AIO_C.wash}`, verticalAlign: "top", lineHeight: 1.5 }}>
+                    {errs.length === 0
+                      ? <span style={{ color: AIO_C.green, fontWeight: 600 }}>none</span>
+                      : errs.map((g, k) => (
+                          <div key={k} style={{ color: AIO_C.amber, fontSize: 11.5 }}>{g.check}</div>
+                        ))}
+                  </td>
+                );
+              })}
+              <td style={{ padding: "8px 14px", borderBottom: `1px solid ${AIO_C.wash}` }} />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* NOTE DIFFS */}
+      {runs.length > 1 && runs[0].ok && (
+        <div style={{ padding: "16px 22px", borderTop: `1px solid ${AIO_C.line}` }}>
+          <div style={{
+            fontSize: 10, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+            letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif", marginBottom: 10,
+          }}>Note text — runs 2 and 3 against run 1</div>
+          {runs.slice(1).map((r, i) => (
+            <NoteDiff key={i} label={`Run ${i + 2} vs run 1`} base={runs[0].note} other={r.ok ? r.note : ""} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── SESSION LOG ───────────────────────────────────────────────────────────── */
+
+const LOG_COLUMNS = [
+  { key: "timestamp",          label: "Time" },
+  { key: "reviewType",         label: "Review" },
+  { key: "diagnosisCode",      label: "Dx" },
+  { key: "source",             label: "Source" },
+  { key: "requestedVisits",    label: "Req" },
+  { key: "visitsToDate",       label: "VTD" },
+  { key: "visitsToDateSource", label: "VTD src" },
+  { key: "runCount",           label: "Runs" },
+  { key: "determinations",     label: "Determination(s)" },
+  { key: "approvedVisits",     label: "Approved" },
+  { key: "agreement",          label: "Agreement" },
+  { key: "guardrailErrors",    label: "Guardrails" },
+  { key: "costUsd",            label: "Cost $" },
+  { key: "latencySec",         label: "Latency s" },
+];
+
+function toCsv(rows) {
+  const esc = (v) => {
+    const s = v == null ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = LOG_COLUMNS.map((c) => esc(c.label)).join(",");
+  const body = rows.map((r) => LOG_COLUMNS.map((c) => esc(r[c.key])).join(","));
+  return [head, ...body].join("\n");
+}
+
+function SessionLog({ rows, onClear }) {
+  if (!rows || rows.length === 0) return null;
+
+  const download = () => {
+    const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    const now  = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+    a.href = url;
+    a.download = `aionly_session_${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const totalCost = rows.reduce((s, r) => s + (parseFloat(r.costUsd) || 0), 0);
+
+  return (
+    <div style={{
+      background: "#fff", border: `1px solid ${AIO_C.line}`, borderRadius: 12,
+      marginTop: 20, boxShadow: "0 2px 12px rgba(0,0,0,0.07)", overflow: "hidden",
+    }}>
+      <div style={{
+        padding: "12px 18px", background: AIO_C.wash, borderBottom: `1px solid ${AIO_C.line}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+      }}>
+        <div>
+          <span style={{
+            fontSize: 11, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+            letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif",
+          }}>Session log</span>
+          <span style={{ marginLeft: 10, fontSize: 11.5, color: AIO_C.faint }}>
+            {rows.length} case{rows.length === 1 ? "" : "s"} · ${totalCost.toFixed(4)} total ·
+            in memory only, lost on reload
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" onClick={download} style={{
+            padding: "7px 15px", borderRadius: 7, border: "none", background: AIO_C.primary,
+            color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer",
+            fontFamily: "'DM Sans', sans-serif",
+          }}>Export CSV</button>
+          <button type="button" onClick={onClear} style={{
+            padding: "7px 15px", borderRadius: 7, border: `1px solid ${AIO_C.line}`,
+            background: "#fff", color: AIO_C.muted, fontSize: 12, fontWeight: 600,
+            cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+          }}>Clear</button>
+        </div>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead>
+            <tr>
+              {LOG_COLUMNS.map((c) => (
+                <th key={c.key} style={{
+                  textAlign: "left", padding: "7px 11px", borderBottom: `1px solid ${AIO_C.line}`,
+                  fontSize: 9.5, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
+                  letterSpacing: "0.05em", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap",
+                }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.id || i}>
+                {LOG_COLUMNS.map((c) => (
+                  <td key={c.key} style={{
+                    padding: "6px 11px", borderBottom: `1px solid ${AIO_C.wash}`,
+                    color: c.key === "agreement" && /identical/.test(String(r[c.key])) ? AIO_C.green
+                         : c.key === "agreement" ? AIO_C.amber
+                         : c.key === "guardrailErrors" && r[c.key] > 0 ? AIO_C.amber
+                         : AIO_C.ink,
+                    fontWeight: c.key === "agreement" ? 600 : 400,
+                    whiteSpace: c.key === "agreement" ? "normal" : "nowrap",
+                    maxWidth: c.key === "agreement" ? 260 : undefined,
+                    fontFamily: ["costUsd", "latencySec", "timestamp"].includes(c.key)
+                      ? "ui-monospace, SFMono-Regular, Menlo, monospace" : undefined,
+                  }}>{r[c.key] == null || r[c.key] === "" ? "—" : String(r[c.key])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Flatten a completed pipeline response into one session-log row. */
+function buildLogRow(result) {
+  const runs = result.runs || [];
+  const ok   = runs.filter((r) => r.ok);
+  const agree = runs.length > 0 ? buildAgreement(runs) : null;
+  const src = [];
+  if (result.extraction && result.extraction.ran) {
+    if (result.extraction.pastedTextRendered) src.push("pasted");
+    if (result.extraction.documentSummary || !result.extraction.pastedTextRendered) src.push("pdf");
+  }
+  if (src.length === 0) src.push("manual only");
+
+  const now = new Date();
+  return {
+    id: `${now.getTime()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    reviewType: result.reviewType,
+    diagnosisCode: (result.resolved && result.resolved.diagnosisCode) || "",
+    source: src.join("+"),
+    requestedVisits: result.requestedVisits,
+    visitsToDate: result.resolved ? result.resolved.visitsToDate : "",
+    visitsToDateSource: result.visitsToDateSource,
+    runCount: runs.length,
+    determinations: runs.length
+      ? runs.map((r) => (r.ok ? r.determination : "ERROR")).join(" | ")
+      : (result.determination || "PEND") + (result.determinationSource === "validation" ? " (validation)" : ""),
+    approvedVisits: ok.length ? ok.map((r) => r.approvedVisits).join(" | ") : "",
+    agreement: agree ? agree.headline : "not run — validation pend",
+    guardrailErrors: runs.reduce((s, r) => s + (r.guardrails || []).filter((g) => g.severity === "error").length, 0),
+    costUsd: result.telemetry ? result.telemetry.total.estimatedCostUsd.toFixed(4) : "",
+    latencySec: result.telemetry ? (result.telemetry.total.wallClockMs / 1000).toFixed(1) : "",
+  };
+}
+
 /* ── THE APP ───────────────────────────────────────────────────────────────── */
 
 function App() {
@@ -8199,6 +8681,10 @@ function App() {
   const [activeRun, setActiveRun] = useState(0);
   const [error, setError]     = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Session log — in memory for the life of the tab. The AI-only route persists
+  // nothing, deliberately, so this is the only record; export before reloading.
+  const [sessionLog, setSessionLog] = useState([]);
 
   const handleAuthSuccess = (tok, userData) => {
     localStorage.setItem("cogentus_token", tok);
@@ -8247,6 +8733,7 @@ function App() {
         timeout: 600000,
       });
       setResult(res.data);
+      setSessionLog((log) => [...log, buildLogRow(res.data)]);
     } catch (err) {
       if (err?.response?.status === 401) handleAuthError();
       else setError(err?.response?.data?.error || err?.response?.data?.detail || `Run failed: ${err.message}`);
@@ -8535,6 +9022,8 @@ function App() {
               </div>
             )}
 
+            {result.runs && result.runs.length > 1 && <RunComparison runs={result.runs} />}
+
             {result.runs && result.runs.length > 1 && (
               <div style={{ ...card, padding: "12px 18px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: '"DM Sans", sans-serif' }}>
@@ -8580,6 +9069,8 @@ function App() {
             <TelemetryStrip telemetry={result.telemetry} visitsToDateSource={result.visitsToDateSource} />
           </>
         )}
+
+        <SessionLog rows={sessionLog} onClear={() => setSessionLog([])} />
       </div>
     </div>
   );

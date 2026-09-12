@@ -19,6 +19,7 @@ import { act } from "react-dom/test-utils";
 import axios from "axios";
 import App from "./App";
 import sample from "./__fixtures__/aionlyResult.sample.json";
+import run3x from "./__fixtures__/aionlyRun3x.sample.json";
 
 jest.mock("axios");
 
@@ -306,5 +307,222 @@ describe("AI-only demo form", () => {
     expect(t).toContain("objectiveMeasurePresent");
     expect(t).toContain("diagnosisCodePresent");
     expect(t).toContain("No determination was produced for this case.");
+  });
+});
+
+/* ── PHASE 4 — INSTRUMENTATION ─────────────────────────────────────────────── */
+
+/** Build a 3-run payload from the sample, applying per-run overrides. */
+function threeRuns(overrides) {
+  const base = sample.runs[0];
+  return {
+    ...sample,
+    runs: overrides.map((o, i) => ({ ...base, runIndex: i + 1, guardrails: [], ...o })),
+  };
+}
+
+async function runWith(data) {
+  axios.post.mockResolvedValue({ data });
+  mount();
+  setInput(container.querySelector('input[type="number"]'), "8");
+  await act(async () => { buttonNamed("Run 3×").click(); });
+}
+
+describe("Run 3× — self-consistency", () => {
+  test("three identical runs produce the identical headline", async () => {
+    await runWith(threeRuns([{}, {}, {}]));
+    expect(text()).toContain("Self-consistency — 3 runs, one extraction");
+    expect(text()).toContain("3/3 identical");
+    expect(text()).toContain("same determination, visit count, severity and stated benchmarks");
+  });
+
+  test("a differing visit count is named in the headline", async () => {
+    await runWith(threeRuns([{}, { approvedVisits: 6 }, {}]));
+    const t = text();
+    expect(t).toContain("3/3 agreed on determination");
+    expect(t).toContain("the visit count differed");
+    expect(t).not.toContain("3/3 identical");
+  });
+
+  test("a split determination is reported as a majority", async () => {
+    await runWith(threeRuns([
+      {},
+      { determination: "APPROVED", approvedVisits: 8 },
+      {},
+    ]));
+    expect(text()).toContain("2/3 agreed on determination");
+  });
+
+  test("benchmark drift gets its own explicit callout", async () => {
+    await runWith(threeRuns([{}, { benchmarkMaxVisits: 30 }, {}]));
+    const t = text();
+    expect(t).toContain("the episode-max benchmark differed");
+    expect(t).toContain("different visit benchmarks for the same diagnosis on");
+  });
+
+  test("guideline wording drift is distinguished from figure drift", async () => {
+    await runWith(threeRuns([{}, { guidelineApplied: "A completely different guideline" }, {}]));
+    const t = text();
+    expect(t).toContain("Benchmark figures held steady, but the guideline was named differently");
+  });
+
+  test("side-by-side table shows every run and a per-field agreement count", async () => {
+    await runWith(threeRuns([{}, { severityAssigned: "moderate" }, {}]));
+    const t = text();
+    expect(t).toContain("Run 1"); expect(t).toContain("Run 2"); expect(t).toContain("Run 3");
+    expect(t).toContain("Benchmark — typical");
+    expect(t).toContain("Benchmark — episode max");
+    expect(t).toContain("Benchmark — max freq/wk");
+    expect(t).toContain("Guideline named");
+    expect(t).toContain("Rule applied");
+    expect(t).toContain("Guardrail failures");
+    expect(t).toContain("2/3");   // severity split
+    expect(t).toContain("3/3");   // fields that held
+  });
+
+  test("an errored run is shown rather than dropped", async () => {
+    await runWith(threeRuns([{}, { ok: false, error: "unparseable JSON" }, {}]));
+    const t = text();
+    expect(t).toContain("errored");
+    expect(t).toContain("1 run errored");
+  });
+
+  test("note diffs compare runs 2 and 3 against run 1", async () => {
+    await runWith(threeRuns([{}, { note: sample.runs[0].note.replace("Approved Visits", "Authorized Visits") }, {}]));
+    const t = text();
+    expect(t).toContain("Note text — runs 2 and 3 against run 1");
+    expect(t).toContain("Run 2 vs run 1");
+    expect(t).toContain("Run 3 vs run 1");
+    expect(t).toContain("byte-identical to run 1");   // run 3
+    expect(t).toMatch(/Run 2 vs run 1\s*—\s*\d+ change/);
+  });
+});
+
+describe("Session log", () => {
+  test("appends a row per run and reports agreement", async () => {
+    await runWith(threeRuns([{}, {}, {}]));
+    const t = text();
+    expect(t).toContain("Session log");
+    expect(t).toContain("1 case ·");
+    expect(t).toContain("in memory only, lost on reload");
+    expect(t).toContain("Export CSV");
+    // headline is carried into the row
+    expect(t).toContain("3/3 identical");
+  });
+
+  test("accumulates across runs and clears on demand", async () => {
+    await runWith(threeRuns([{}, {}, {}]));
+    await act(async () => { buttonNamed("Run 3×").click(); });
+    expect(text()).toContain("2 cases ·");
+    click(buttonNamed("Clear"));
+    expect(text()).not.toContain("Session log");
+  });
+
+  test("a validation pend is logged, not skipped", async () => {
+    const pended = {
+      ...sample, determination: "PEND", determinationSource: "validation",
+      validation: { passed: false, failures: [{ check: "objectiveMeasurePresent", message: "none" }] },
+      runs: [],
+    };
+    axios.post.mockResolvedValue({ data: pended });
+    mount();
+    setInput(container.querySelector('input[type="number"]'), "8");
+    await act(async () => { buttonNamed("Run").click(); });
+    expect(text()).toContain("Session log");
+    expect(text()).toContain("PEND (validation)");
+    expect(text()).toContain("not run — validation pend");
+  });
+
+  test("CSV export triggers a download with a header row and one row per case", async () => {
+    // jsdom's Blob has no .text(), so capture the CSV at construction instead.
+    const captured = [];
+    const OrigBlob = global.Blob;
+    global.Blob = function (parts, opts) { captured.push(String(parts.join(""))); return new OrigBlob(parts, opts); };
+    const created = [];
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (blob) => { created.push(blob); return "blob:mock"; };
+    URL.revokeObjectURL = () => {};
+    const origClick = window.HTMLAnchorElement.prototype.click;
+    let downloadName = "";
+    window.HTMLAnchorElement.prototype.click = function () { downloadName = this.download; };
+
+    // The real 3-run response: its agreement sentence lists three drifted fields
+    // and therefore contains a comma, so the quoting path actually runs.
+    await runWith(run3x);
+    click(buttonNamed("Export CSV"));
+
+    expect(created.length).toBe(1);
+    expect(downloadName).toMatch(/^aionly_session_\d{8}_\d{4}\.csv$/);
+    expect(captured.length).toBe(1);
+    const lines = captured[0].trim().split("\n");
+    expect(lines[0]).toContain("Time,Review,Dx,Source,Req,VTD");
+    expect(lines[0]).toContain("Agreement");
+    expect(lines[0]).toContain("Cost $");
+    expect(lines.length).toBe(2);
+    // The agreement sentence contains a comma, so it must arrive quoted — an
+    // unquoted comma would silently shift every column after it.
+    expect(lines[1]).toContain('"3/3 agreed on determination and the visit count;');
+    expect(lines[1]).toContain('the typical-visit benchmark and the episode-max benchmark differed."');
+    // and the row still parses to exactly one field per header column
+    const fields = lines[1].match(/("([^"]|"")*"|[^,]*)(,|$)/g).filter((f, i, a) => i < a.length - 1);
+    expect(fields.length).toBe(lines[0].split(",").length);
+
+    global.Blob = OrigBlob;
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+    window.HTMLAnchorElement.prototype.click = origClick;
+  });
+});
+
+/* ── GROUNDED IN REAL OUTPUT ───────────────────────────────────────────────
+ * run3x fixture is a genuine 3-run response: identical input, one extraction
+ * reused across three determination calls. The runs agreed on the ruling and
+ * disagreed on the benchmarks they claimed to be applying it against — the
+ * exact shape of finding this instrumentation exists to surface, so it is
+ * pinned here rather than described.
+ */
+describe("Run 3× against a real recorded response", () => {
+  beforeEach(async () => {
+    axios.post.mockResolvedValue({ data: run3x });
+    mount();
+    setInput(container.querySelector('input[type="number"]'), "8");
+    await act(async () => { buttonNamed("Run 3×").click(); });
+  });
+
+  test("the headline separates the ruling that held from the benchmarks that moved", () => {
+    const t = text();
+    expect(t).toContain("3/3 agreed on determination and the visit count");
+    expect(t).toContain("the typical-visit benchmark");
+    expect(t).toContain("differed");
+    expect(t).not.toContain("3/3 identical");
+  });
+
+  test("benchmark drift raises the explicit downstream-instability warning", () => {
+    expect(text()).toContain("different visit benchmarks for the same diagnosis on");
+  });
+
+  test("all three determinations and all three benchmark sets are on screen", () => {
+    const t = text();
+    // the ruling every run reached
+    expect(t).toContain("Partial Denial — Taper");
+    // the three distinct typical-visit benchmarks
+    for (const v of run3x.runs.map((r) => String(r.benchmarkTypicalVisits))) {
+      expect(t).toContain(v);
+    }
+  });
+
+  test("guardrails that fired on real runs are shown per run", () => {
+    const t = text();
+    expect(t).toContain("possibleFabricatedClinicalValue");
+    expect(t).toContain("noteFrequencyMismatch");
+    expect(t).toContain("none");   // run 2 tripped no errors
+  });
+
+  test("the three notes are diffed and none is byte-identical", () => {
+    const t = text();
+    expect(t).toContain("Run 2 vs run 1");
+    expect(t).toContain("Run 3 vs run 1");
+    expect(t).not.toContain("byte-identical to run 1");
   });
 });
