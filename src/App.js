@@ -8182,7 +8182,6 @@ const LOG_COLUMNS = [
   { key: "mode",               label: "Mode" },
   { key: "model",              label: "Model" },
   { key: "effort",             label: "Effort" },
-  { key: "thinking",           label: "Thinking" },
   { key: "extractionSec",      label: "Extract s" },
   { key: "recSec",             label: "Rec visible s" },
   { key: "noteSec",            label: "Note done s" },
@@ -8320,7 +8319,6 @@ function buildLogRow(result, timings) {
     mode: t.mode || result.mode || "",
     model: (t.model || (result.config && result.config.model) || "").replace("claude-", ""),
     effort: t.effort || (result.config && result.config.effort) || "",
-    thinking: t.thinking || (result.config && result.config.thinking) || "",
     extractionSec: t.extractionCached ? "cached" : sec(t.extractionMs),
     recSec: sec(t.recMs),
     noteSec: sec(t.noteMs),
@@ -8445,7 +8443,8 @@ function App() {
   // shape only the review step.
   const [reviewModel, setReviewModel]       = useState("claude-sonnet-5");
   const [reviewEffort, setReviewEffort]     = useState("low");
-  const [reviewThinking, setReviewThinking] = useState("on");
+  // Thinking stays on; the effort level is the only reasoning dial exposed.
+  const reviewThinking = "on";
   // The review path is fixed: recommendation first, note streamed. (The
   // single-call prompt remains reachable through the API for comparison.)
   const reviewMode = "split";
@@ -8785,13 +8784,6 @@ function App() {
                 {REVIEW_EFFORTS.map((v) => <option key={v} value={v}>{v}</option>)}
               </select>
             </div>
-            <div>
-              {labelEl("Thinking")}
-              <select value={reviewThinking} onChange={(e) => setReviewThinking(e.target.value)} aria-label="Thinking" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
-                <option value="on">on</option>
-                <option value="off">off</option>
-              </select>
-            </div>
           </div>
           )}
 
@@ -8955,7 +8947,7 @@ function App() {
                 <span style={{ color: AIO_C.muted }}>
                   extraction {timings.extractionCached ? `cached — saved ${timings.extractionServerMs ? (timings.extractionServerMs / 1000).toFixed(1) + "s" : "the read"}` : timings.extractionMs ? `${(timings.extractionMs / 1000).toFixed(1)}s on click` : "not needed"}
                 </span>
-                <span style={{ color: AIO_C.muted }}>{timings.mode}{timings.recMs != null ? ` · ${timings.model.replace("claude-", "")} · effort ${timings.effort} · thinking ${timings.thinking}` : ""}</span>
+                <span style={{ color: AIO_C.muted }}>{timings.mode}{timings.recMs != null ? ` · ${timings.model.replace("claude-", "")} · effort ${timings.effort}` : ""}</span>
               </div>
             )}
 

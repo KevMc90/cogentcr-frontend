@@ -144,7 +144,7 @@ describe("AI Auth Demo form", () => {
     expect(text()).toContain("recommends, and writes the full note");
     expect(selectNamed("Review model").value).toBe("claude-sonnet-5");
     expect(selectNamed("Review effort").value).toBe("low");
-    expect(selectNamed("Thinking").value).toBe("on");
+    expect(selectNamed("Thinking")).toBeNull();
     expect(selectNamed("Review path")).toBeNull();
   });
 
@@ -228,7 +228,6 @@ describe("AI Auth Demo form", () => {
       mount();
       click(buttonNamed("Full Review"));
       setSelect(selectNamed("Review effort"), "high");
-      setSelect(selectNamed("Thinking"), "off");
       await runReview();
       expect(posted("/v1/aionly/compose").length).toBe(0);
       const rec = posted("/v1/aionly/recommend");
@@ -236,7 +235,7 @@ describe("AI Auth Demo form", () => {
       expect(rec[0][1].mode).toBe("split");
       expect(rec[0][1].model).toBe("claude-sonnet-5");
       expect(rec[0][1].effort).toBe("high");
-      expect(rec[0][1].thinking).toBe("off");
+      expect(rec[0][1].thinking).toBe("on");
       expect(global.fetch).toHaveBeenCalledTimes(1);
       const noteBody = JSON.parse(global.fetch.mock.calls[0][1].body);
       expect(noteBody.ruling.determination).toBe("PARTIAL_DENIAL_TAPER");
@@ -246,7 +245,7 @@ describe("AI Auth Demo form", () => {
       expect(noteArea().value).toContain("Taper Indicated: streamed.");
       expect(t).toContain("Recommendation visible");
       expect(t).toContain("Note complete");
-      expect(t).toContain("full-review · sonnet-5 · effort high · thinking off");
+      expect(t).toContain("full-review · sonnet-5 · effort high");
       expect(t).not.toContain("Benchmarks and guideline applied");
       expect(t).not.toContain("— reviewer to complete —");
     });
@@ -367,7 +366,7 @@ describe("Session log", () => {
     mount();
     await runReview({ full: true });
     const t = text();
-    for (const col of ["Mode", "Model", "Effort", "Thinking", "Extract s", "Rec visible s", "Note done s", "Rec out tok", "Note out tok", "Recommendation", "Approved"]) {
+    for (const col of ["Mode", "Model", "Effort", "Extract s", "Rec visible s", "Note done s", "Rec out tok", "Note out tok", "Recommendation", "Approved"]) {
       expect(t).toContain(col);
     }
     expect(t).toContain("full-review");
@@ -400,7 +399,7 @@ describe("Session log", () => {
     expect(downloadName).toMatch(/^aionly_session_\d{8}_\d{4}\.csv$/);
     const lines = captured[0].trim().split("\n");
     expect(lines.length).toBe(2);
-    expect(lines[0]).toContain("Mode,Model,Effort,Thinking,Extract s,Rec visible s,Note done s");
+    expect(lines[0]).toContain("Mode,Model,Effort,Extract s,Rec visible s,Note done s");
     const fields = lines[1].match(/("([^"]|"")*"|[^,]*)(,|$)/g).filter((f, i, a) => i < a.length - 1);
     expect(fields.length).toBe(lines[0].split(",").length);
 
