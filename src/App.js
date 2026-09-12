@@ -7927,11 +7927,38 @@ const DET_STYLE = {
   PEND:                      { c: AIO_C.muted, bg: AIO_C.wash,    b: AIO_C.line,      label: "Pend" },
 };
 
-function NoteBox({ note, streaming }) {
-  const [text, setText]     = useState(note || "");
+// Shown on the blank reviewer-owned lines in Extract Only mode. Removed the
+// moment the reviewer clicks into the note, never copied.
+const REVIEWER_PLACEHOLDER = "— reviewer to complete —";
+function withReviewerPlaceholders(note) {
+  if (!note) return note;
+  // Tolerates "Label:", "Label: ", "Label:\n" and a missing trailing newline.
+  return String(note)
+    .replace(/(Determination and Rationale:)[ \t]*\n?(?=[ \t]*(?:\n|$))/, `$1\n${REVIEWER_PLACEHOLDER}`)
+    .replace(/(Approved Visits:)[ \t]*\n?(?=[ \t]*(?:\n|$))/, `$1\n${REVIEWER_PLACEHOLDER}`);
+}
+function stripReviewerPlaceholders(text) {
+  return String(text || "").split(REVIEWER_PLACEHOLDER).join("");
+}
+
+function NoteBox({ note, streaming, reviewerFields }) {
+  const [text, setText]     = useState(reviewerFields ? withReviewerPlaceholders(note || "") : (note || ""));
   const [copied, setCopied] = useState(false);
   const ref = useRef(null);
-  useEffect(() => { setText(note || ""); setCopied(false); }, [note]);
+  useEffect(() => { setText(reviewerFields ? withReviewerPlaceholders(note || "") : (note || "")); setCopied(false); }, [note, reviewerFields]);
+
+  // First click into a note with placeholders: drop them and put the caret on
+  // the Determination line so the reviewer can start typing straight away.
+  const onFocus = () => {
+    if (!reviewerFields || !text.includes(REVIEWER_PLACEHOLDER)) return;
+    const cleaned = stripReviewerPlaceholders(text);
+    setText(cleaned);
+    const at = cleaned.indexOf("Determination and Rationale:\n");
+    if (at >= 0 && ref.current) {
+      const pos = at + "Determination and Rationale:\n".length;
+      setTimeout(() => { try { ref.current.setSelectionRange(pos, pos); } catch (e) { /* ignore */ } }, 0);
+    }
+  };
   // Size the box to the whole note so nothing has to be expanded or scrolled
   // to read it end to end. Re-measured on every edit.
   useEffect(() => {
@@ -7944,7 +7971,7 @@ function NoteBox({ note, streaming }) {
   const copy = () => {
     // Edits affect the copy only — result.runs[n].note is never written back.
     const write = navigator.clipboard && navigator.clipboard.writeText
-      ? navigator.clipboard.writeText(text)
+      ? navigator.clipboard.writeText(stripReviewerPlaceholders(text))
       : Promise.reject(new Error("clipboard unavailable"));
     write.then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); })
          .catch(() => { setCopied(false); });
@@ -7956,7 +7983,7 @@ function NoteBox({ note, streaming }) {
         <div style={{
           fontSize: 10, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase",
           letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif",
-        }}>Composed note — editable, edits affect the copy only{streaming ? " — writing…" : ""}</div>
+        }}>{reviewerFields ? "Drafted note — type the determination and approved visits, then copy" : "Composed note — editable, edits affect the copy only"}{streaming ? " — writing…" : ""}</div>
         <button
           type="button" onClick={copy} disabled={!!streaming}
           style={{
@@ -7970,6 +7997,7 @@ function NoteBox({ note, streaming }) {
       <textarea
         ref={ref}
         value={text}
+        onFocus={onFocus}
         onChange={(e) => setText(e.target.value)}
         spellCheck={false}
         style={{
@@ -8151,7 +8179,7 @@ const LOG_COLUMNS = [
   { key: "requestedVisits",    label: "Req" },
   { key: "visitsToDate",       label: "VTD" },
   { key: "visitsToDateSource", label: "VTD src" },
-  { key: "mode",               label: "Path" },
+  { key: "mode",               label: "Mode" },
   { key: "model",              label: "Model" },
   { key: "effort",             label: "Effort" },
   { key: "thinking",           label: "Thinking" },
@@ -8289,7 +8317,7 @@ function buildLogRow(result, timings) {
     requestedVisits: result.requestedVisits,
     visitsToDate: result.resolved ? result.resolved.visitsToDate : "",
     visitsToDateSource: result.visitsToDateSource,
-    mode: t.mode || (result.config && result.config.mode) || "",
+    mode: t.mode || result.mode || "",
     model: (t.model || (result.config && result.config.model) || "").replace("claude-", ""),
     effort: t.effort || (result.config && result.config.effort) || "",
     thinking: t.thinking || (result.config && result.config.thinking) || "",
@@ -8418,7 +8446,15 @@ function App() {
   const [reviewModel, setReviewModel]       = useState("claude-sonnet-5");
   const [reviewEffort, setReviewEffort]     = useState("low");
   const [reviewThinking, setReviewThinking] = useState("on");
-  const [reviewMode, setReviewMode]         = useState("split");
+  // The review path is fixed: recommendation first, note streamed. (The
+  // single-call prompt remains reachable through the API for comparison.)
+  const reviewMode = "split";
+
+  // Review mode. "extract" — extraction and a note with the decision left for
+  // the reviewer to type; no determination call. "full" — the recommendation
+  // call and the streamed note. Extract Only is the default: conservative and
+  // faster.
+  const [reviewKind, setReviewKind] = useState("extract");
 
   // Extraction cache, keyed on file contents + the inputs extraction depends
   // on. Filled in the background as soon as a file is chosen, so clicking
@@ -8516,7 +8552,7 @@ function App() {
       if (entry.status === "error") { setError(`Unable to read the clinical documentation: ${entry.error}`); return; }
       const extractionMs = entry.status === "ready" ? (cachedBefore ? 0 : performance.now() - t0) : 0;
 
-      // 2. Recommendation — visible the moment it returns.
+      // 2. Extract Only: one formatting call, decision left blank. Done.
       const body = {
         reviewType,
         requestedVisits: parseInt(requestedVisits, 10),
@@ -8529,6 +8565,25 @@ function App() {
         extractionTelemetry: entry.data ? entry.data.telemetry.extraction : null,
         mode: reviewMode, model: reviewModel, effort: reviewEffort, thinking: reviewThinking,
       };
+      if (reviewKind === "extract") {
+        const res = await axios.post(`${API_BASE}/v1/aionly/compose`, body, {
+          headers: { Authorization: `Bearer ${token}` }, timeout: 600000,
+        });
+        const noteMsX = performance.now() - t0;
+        const dataX = res.data;
+        if (dataX.error && !dataX.note) { setError(`Note assembly failed: ${dataX.error}`); return; }
+        setResult(dataX);
+        const telX = dataX.telemetry && dataX.telemetry.determinations && dataX.telemetry.determinations[0];
+        const tX = { extractionMs, extractionCached: cachedBefore,
+                     extractionServerMs: entry.data && entry.data.telemetry.extraction ? entry.data.telemetry.extraction.latencyMs : null,
+                     recMs: null, noteMs: noteMsX, mode: "extract-only", model: reviewModel, effort: "low", thinking: "off",
+                     recOut: null, noteOut: telX ? telX.outputTokens : null };
+        setTimings(tX);
+        setSessionLog((log) => [...log, buildLogRow(dataX, tX)]);
+        return;
+      }
+
+      // 3. Full Review: recommendation — visible the moment it returns.
       const res = await axios.post(`${API_BASE}/v1/aionly/recommend`, body, {
         headers: { Authorization: `Bearer ${token}` }, timeout: 600000,
       });
@@ -8539,7 +8594,7 @@ function App() {
       let noteMs = recMs;
       let noteTelemetry = null;
 
-      // 3. Note — streamed in split mode; already present in single mode.
+      // 4. Note — streamed in split mode; already present in single mode.
       if (reviewMode === "split" && run0 && run0.ok) {
         setNoteStreaming(true);
         let text = "";
@@ -8578,7 +8633,7 @@ function App() {
       }
 
       const t = { extractionMs, extractionCached: cachedBefore, extractionServerMs: entry.data && entry.data.telemetry.extraction ? entry.data.telemetry.extraction.latencyMs : null,
-                  recMs, noteMs, mode: reviewMode, model: reviewModel, effort: reviewEffort, thinking: reviewThinking,
+                  recMs, noteMs, mode: "full-review", model: reviewModel, effort: reviewEffort, thinking: reviewThinking,
                   recOut: run0 && run0.telemetry ? run0.telemetry.outputTokens : null,
                   noteOut: noteTelemetry ? noteTelemetry.outputTokens : (run0 && run0.telemetry ? run0.telemetry.outputTokens : null) };
       setTimings(t);
@@ -8669,6 +8724,23 @@ function App() {
           {sectionHead(1, "Case context")}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 16, marginBottom: 24 }}>
             <div>
+              {labelEl("Review mode", reviewKind === "extract"
+                ? "Reads the documents and drafts the note. You write the determination."
+                : "Reads the documents, recommends, and writes the full note.")}
+              <div style={{ display: "flex", gap: 8 }} role="group" aria-label="Review mode">
+                {[["extract", "Extract Only"], ["full", "Full Review"]].map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => setReviewKind(v)}
+                    style={{
+                      flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
+                      border: `1.5px solid ${reviewKind === v ? AIO_C.primary : AIO_C.line}`,
+                      background: reviewKind === v ? AIO_C.primary : AIO_C.white,
+                      color: reviewKind === v ? "#fff" : "#475569",
+                      fontSize: 13, fontWeight: 600, fontFamily: '"DM Sans", sans-serif',
+                    }}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div>
               {labelEl("Review type")}
               <div style={{ display: "flex", gap: 8 }}>
                 {["initial", "subsequent"].map((t) => (
@@ -8699,6 +8771,7 @@ function App() {
           </div>
 
           {/* Latency experiment — shapes the review step only; extraction is unaffected. */}
+          {reviewKind === "full" && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 24, padding: "12px 14px", background: AIO_C.wash, border: `1px solid ${AIO_C.line}`, borderRadius: 9 }}>
             <div>
               {labelEl("Review model")}
@@ -8719,14 +8792,8 @@ function App() {
                 <option value="off">off</option>
               </select>
             </div>
-            <div>
-              {labelEl("Review path")}
-              <select value={reviewMode} onChange={(e) => setReviewMode(e.target.value)} aria-label="Review path" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
-                <option value="split">Split — recommendation first, note streamed</option>
-                <option value="single">Single call — recommendation and note together</option>
-              </select>
-            </div>
           </div>
+          )}
 
           {/* SECTION 2 — CLINICAL SOURCE */}
           {sectionHead(2, "Clinical source — any, all, or none")}
@@ -8865,7 +8932,7 @@ function App() {
         {/* -- OUTPUT -- */}
         {result && (
           <>
-            {result.validation && !result.validation.passed && (
+            {result.mode !== "extract-only" && result.validation && !result.validation.passed && (
               <div style={{ ...card, padding: "18px 22px", borderColor: AIO_C.amberLine, background: AIO_C.amberBg }}>
                 <div style={{ fontSize: 15, fontWeight: 800, color: AIO_C.amber, fontFamily: "'Fraunces', Georgia, serif", marginBottom: 4 }}>
                   Pend — validation did not pass
@@ -8883,12 +8950,12 @@ function App() {
 
             {timings && (
               <div style={{ ...card, padding: "10px 18px", fontSize: 12.5, color: AIO_C.ink, fontFamily: '"DM Sans", sans-serif', display: "flex", gap: 22, flexWrap: "wrap" }}>
-                <span><strong>Recommendation visible</strong> in {(timings.recMs / 1000).toFixed(1)}s</span>
-                <span><strong>Note complete</strong> in {(timings.noteMs / 1000).toFixed(1)}s</span>
+                {timings.recMs != null && <span><strong>Recommendation visible</strong> in {(timings.recMs / 1000).toFixed(1)}s</span>}
+                <span><strong>{timings.recMs == null ? "Note ready" : "Note complete"}</strong> in {(timings.noteMs / 1000).toFixed(1)}s</span>
                 <span style={{ color: AIO_C.muted }}>
                   extraction {timings.extractionCached ? `cached — saved ${timings.extractionServerMs ? (timings.extractionServerMs / 1000).toFixed(1) + "s" : "the read"}` : timings.extractionMs ? `${(timings.extractionMs / 1000).toFixed(1)}s on click` : "not needed"}
                 </span>
-                <span style={{ color: AIO_C.muted }}>{timings.mode} · {timings.model.replace("claude-", "")} · effort {timings.effort} · thinking {timings.thinking}</span>
+                <span style={{ color: AIO_C.muted }}>{timings.mode}{timings.recMs != null ? ` · ${timings.model.replace("claude-", "")} · effort ${timings.effort} · thinking ${timings.thinking}` : ""}</span>
               </div>
             )}
 
@@ -8901,6 +8968,17 @@ function App() {
                 <ExtractionPanel result={result} />
               </div>
 
+              {result.mode === "extract-only" ? (
+                <div style={{ ...card, padding: "20px 22px", marginBottom: 0 }}>
+                  <h2 style={{
+                    margin: "0 0 16px", fontSize: 11, fontWeight: 700, color: AIO_C.muted,
+                    textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: '"DM Sans", sans-serif',
+                  }}>Note — determination left for you</h2>
+                  {result.note
+                    ? <NoteBox note={result.note} reviewerFields />
+                    : <div style={{ fontSize: 12.5, color: AIO_C.faint, fontStyle: "italic" }}>No note was produced for this case.</div>}
+                </div>
+              ) : (
               <div style={{ ...card, padding: "20px 22px", marginBottom: 0 }}>
                 <h2 style={{
                   margin: "0 0 16px", fontSize: 11, fontWeight: 700, color: AIO_C.muted,
@@ -8912,9 +8990,10 @@ function App() {
                       No recommendation was produced for this case.
                     </div>}
               </div>
+              )}
             </div>
 
-            {activeRunObj && activeRunObj.ok && (activeRunObj.note || noteStreaming) && (
+            {result.mode !== "extract-only" && activeRunObj && activeRunObj.ok && (activeRunObj.note || noteStreaming) && (
               <div style={{ ...card, padding: "20px 22px", marginTop: 20, marginBottom: 0 }}>
                 <NoteBox note={noteStreaming ? streamedNote : activeRunObj.note} streaming={noteStreaming} />
               </div>

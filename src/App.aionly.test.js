@@ -6,10 +6,11 @@
  * no-unused-vars nor react-hooks/rules-of-hooks is enforced, so `npm run build`
  * passing proves only that the file parses. This test is the actual safety net.
  *
- * The form's flow is: pre-extract on upload (POST /v1/aionly/extract, cached
- * on the file contents) → POST /v1/aionly/recommend (JSON, with the cached
- * extraction) → in split mode, POST /v1/aionly/note streamed as SSE. The
- * single-call route /v1/aionly/evaluate is never called by the form.
+ * Two review modes. "Extract Only" (the default): pre-extract on upload →
+ * POST /v1/aionly/compose → a note with the determination left blank for the
+ * reviewer. "Full Review": pre-extract → POST /v1/aionly/recommend (split
+ * path) → POST /v1/aionly/note streamed as SSE. The single-call route
+ * /v1/aionly/evaluate is never called by the form.
  *
  * The fixture in __fixtures__/aionlyResult.sample.json is a genuine
  * single-call response (PCL subsequent review, both PDFs, manual VTD 14).
@@ -28,8 +29,7 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 let container;
 let root;
 
-// A split-mode recommendation response: the same case, but the run carries
-// only the seven recommendation fields — no note, no benchmarks.
+// ── canned responses ────────────────────────────────────────────────────────
 const SPLIT_RUN = (() => {
   const r = sample.runs[0];
   return {
@@ -44,7 +44,12 @@ const SPLIT_RUN = (() => {
 })();
 const splitResult = { ...sample, config: { mode: "split", model: "claude-sonnet-5", effort: "low", thinking: "on" },
   runs: [SPLIT_RUN], telemetry: { ...sample.telemetry, determinations: [SPLIT_RUN.telemetry] } };
-const singleResult = { ...sample, config: { mode: "single", model: "claude-sonnet-5", effort: "low", thinking: "on" } };
+
+const BLANK_NOTE = "HPI/Care History:\n35 year old male, PCL injury, IE 04/23/2026. Total Approved 14 visits.\n\nClinical Summary:\nPN 06/11/2026 (IE 04/23/2026): 14 VTD. Pain 2/10 (5/10). PT ROM: Right knee flexion 125° (95°).\n\nPOC:\n2x/week × 4 weeks\n\nRequested Visits:\n8\n\nDetermination and Rationale:\n\n\nApproved Visits:\n";
+const extractOnlyResult = { ...sample, mode: "extract-only", determination: null, determinationSource: "reviewer",
+  hpiSentence: "35 year old male, PCL injury, IE 04/23/2026. Total Approved 14 visits.", note: BLANK_NOTE, error: null, runs: [],
+  telemetry: { ...sample.telemetry, determinations: [{ call: "note-assembly", model: "claude-sonnet-5", effort: "thinking off · effort low", thinking: "off",
+    latencyMs: 5200, inputTokens: 2100, outputTokens: 380, stopReason: "end_turn", estimatedCostUsd: 0.008 }] } };
 
 const STREAMED_NOTE = "HPI/Care History:\n36 year old male, PCL tear.\n\nDetermination and Rationale:\nPartial Denial — Taper Indicated: streamed.\n\nApproved Visits:\n4";
 function sseBody() {
@@ -55,12 +60,13 @@ function sseBody() {
   return delta("HPI/Care History:\n36 year old male, PCL tear.") + delta("\n\nDetermination and Rationale:\nPartial Denial — Taper Indicated: streamed.\n\nApproved Visits:\n4") + done;
 }
 
-function mockApi({ recommend = splitResult, extract } = {}) {
+function mockApi({ recommend = splitResult, compose = extractOnlyResult, extract } = {}) {
   axios.post.mockImplementation(async (url) => {
     if (url.endsWith("/v1/aionly/extract")) {
       return { data: extract || { ok: true, extraction: sample.extraction, telemetry: { extraction: sample.telemetry.extraction } } };
     }
     if (url.endsWith("/v1/aionly/recommend")) return { data: recommend };
+    if (url.endsWith("/v1/aionly/compose")) return { data: compose };
     throw new Error("unexpected axios.post to " + url);
   });
   global.fetch = jest.fn(async (url) => {
@@ -85,13 +91,13 @@ afterEach(() => {
   delete global.fetch;
 });
 
-function mount() {
-  act(() => { root = ReactDOM.createRoot(container); root.render(<App />); });
-}
+function mount() { act(() => { root = ReactDOM.createRoot(container); root.render(<App />); }); }
 const text = () => container.textContent;
 const buttonNamed = (label) => Array.from(container.querySelectorAll("button")).find((b) => b.textContent.trim() === label);
 const selectNamed = (label) => container.querySelector(`select[aria-label="${label}"]`);
+const noteArea = () => Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
 const RUN = "Extract and Review";
+const posted = (suffix) => axios.post.mock.calls.filter((c) => c[0].endsWith(suffix));
 
 function click(el) { act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); }); }
 function setInput(el, value) {
@@ -105,7 +111,8 @@ function setSelect(el, value) {
 }
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 150)); });
 
-async function runReview({ subsequent = false } = {}) {
+async function runReview({ subsequent = false, full = false } = {}) {
+  if (full) click(buttonNamed("Full Review"));
   if (subsequent) click(buttonNamed("subsequent"));
   setInput(container.querySelector('input[type="number"]'), "8");
   await act(async () => { buttonNamed(RUN).click(); });
@@ -122,20 +129,23 @@ describe("AI Auth Demo form", () => {
     expect(buttonNamed("Log out")).toBeTruthy();
   });
 
-  test("renders the input sections, the latency controls, and a single Extract and Review button", () => {
+  test("defaults to Extract Only, with the latency controls hidden until Full Review is chosen", () => {
     mount();
     const t = text();
     expect(t).toContain("Case context");
     expect(t).toContain("Clinical source");
-    expect(t).toContain("Override what the documents say");
     expect(buttonNamed(RUN)).toBeTruthy();
-    expect(buttonNamed("Run 3×")).toBeUndefined();
-    expect(t).not.toContain("No rules engine");
+    expect(buttonNamed("Extract Only")).toBeTruthy();
+    expect(buttonNamed("Full Review")).toBeTruthy();
+    expect(t).toContain("You write the determination.");
+    expect(selectNamed("Review model")).toBeNull();
+    expect(selectNamed("Review path")).toBeNull();
+    click(buttonNamed("Full Review"));
+    expect(text()).toContain("recommends, and writes the full note");
     expect(selectNamed("Review model").value).toBe("claude-sonnet-5");
     expect(selectNamed("Review effort").value).toBe("low");
-    expect(Array.from(selectNamed("Review effort").options).map((o) => o.value)).toEqual(["low", "medium", "high"]);
     expect(selectNamed("Thinking").value).toBe("on");
-    expect(selectNamed("Review path").value).toBe("split");
+    expect(selectNamed("Review path")).toBeNull();
   });
 
   test("section 4 appears only for a subsequent review", () => {
@@ -152,198 +162,224 @@ describe("AI Auth Demo form", () => {
     expect(text()).toContain("Requested visits is required.");
   });
 
-  test("with no clinical source it skips extraction and posts the recommendation with the chosen settings", async () => {
-    mount();
-    setSelect(selectNamed("Review effort"), "high");
-    setSelect(selectNamed("Thinking"), "off");
-    await runReview();
-    const calls = axios.post.mock.calls.map((c) => c[0]);
-    expect(calls.some((u) => u.endsWith("/v1/aionly/extract"))).toBe(false);
-    expect(calls.some((u) => u.endsWith("/v1/aionly/evaluate"))).toBe(false);
-    const rec = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/recommend"));
-    expect(rec).toBeTruthy();
-    const body = rec[1];
-    expect(body.requestedVisits).toBe(8);
-    expect(body.extraction.ran).toBe(false);
-    expect(body.mode).toBe("split");
-    expect(body.model).toBe("claude-sonnet-5");
-    expect(body.effort).toBe("high");
-    expect(body.thinking).toBe("off");
-  });
-
-  test("split path: recommendation renders first, then the note streams in and the timings line appears", async () => {
-    mount();
-    await runReview();
-    const t = text();
-    expect(t).toContain("Recommendation and note");
-    expect(t).toContain("Partial Denial — Taper");
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(String(global.fetch.mock.calls[0][0])).toMatch(/\/v1\/aionly\/note$/);
-    const noteBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(noteBody.ruling.determination).toBe("PARTIAL_DENIAL_TAPER");
-    expect(noteBody.resolved.visitsToDate).toBe(14);
-    const ta = Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
-    expect(ta).toBeTruthy();
-    expect(ta.value).toContain("Taper Indicated: streamed.");
-    expect(ta.value).toContain("Approved Visits:\n4");
-    expect(t).toContain("Recommendation visible");
-    expect(t).toContain("Note complete");
-    expect(t).toContain("split · sonnet-5 · effort low · thinking on");
-    expect(t).not.toContain("Benchmarks and guideline applied");
-    expect(t).toContain("note");
-    expect(t).toContain("recommendation");
-  });
-
-  test("single path: one call, no note stream, benchmarks block shown", async () => {
-    mockApi({ recommend: singleResult });
-    mount();
-    setSelect(selectNamed("Review path"), "single");
-    await runReview();
-    expect(global.fetch).not.toHaveBeenCalled();
-    const rec = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/recommend"));
-    expect(rec[1].mode).toBe("single");
-    const t = text();
-    expect(t).toContain("Benchmarks and guideline applied");
-    expect(t).toContain("Guideline applied");
-    expect(t).toContain("Source of the figures");
-    const ta = Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
-    expect(ta.value).toBe(sample.runs[0].note);
-    expect(t).toContain("single · sonnet-5");
-  });
-
-  test("pre-extraction: choosing a file extracts in the background, and the click reuses it", async () => {
-    mount();
-    const input = container.querySelector('input[type="file"]');
-    const file = new File(["%PDF-1.4 test"], "ie.pdf", { type: "application/pdf" });
-    Object.defineProperty(input, "files", { value: [file], configurable: true });
-    act(() => { input.dispatchEvent(new Event("change", { bubbles: true })); });
-    await settle();
-    expect(text()).toContain("Extraction ready");
-    const extractCalls = () => axios.post.mock.calls.filter((c) => c[0].endsWith("/v1/aionly/extract")).length;
-    expect(extractCalls()).toBe(1);
-    const fd = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/extract"))[1];
-    expect(fd.get("documents")).toBeTruthy();
-
-    await runReview();
-    expect(extractCalls()).toBe(1);
-    const rec = axios.post.mock.calls.find((c) => c[0].endsWith("/v1/aionly/recommend"))[1];
-    expect(rec.extraction.ran).toBe(true);
-    expect(rec.extraction.raw.primaryDiagnosisCode).toBe("S83.101");
-    expect(text()).toContain("extraction cached");
-  });
-
-  test("a pre-extraction failure is shown and the run reports it rather than proceeding", async () => {
-    axios.post.mockImplementation(async (url) => {
-      if (url.endsWith("/v1/aionly/extract")) { const e = new Error("bad pdf"); e.response = { status: 400, data: { detail: "Unreadable PDF" } }; throw e; }
-      return { data: splitResult };
+  describe("Extract Only", () => {
+    test("posts to /compose only — no recommendation call, no note stream", async () => {
+      mount();
+      await runReview();
+      expect(posted("/v1/aionly/compose").length).toBe(1);
+      expect(posted("/v1/aionly/recommend").length).toBe(0);
+      expect(posted("/v1/aionly/evaluate").length).toBe(0);
+      expect(global.fetch).not.toHaveBeenCalled();
+      const body = posted("/v1/aionly/compose")[0][1];
+      expect(body.requestedVisits).toBe(8);
+      expect(body.extraction.ran).toBe(false);
     });
-    mount();
-    const input = container.querySelector('input[type="file"]');
-    Object.defineProperty(input, "files", { value: [new File(["x"], "bad.pdf", { type: "application/pdf" })], configurable: true });
-    act(() => { input.dispatchEvent(new Event("change", { bubbles: true })); });
-    await settle();
-    expect(text()).toContain("Extraction failed: Unreadable PDF");
-    await runReview();
-    expect(text()).toContain("Unable to read the clinical documentation: Unreadable PDF");
-    expect(axios.post.mock.calls.some((c) => c[0].endsWith("/v1/aionly/recommend"))).toBe(false);
-  });
 
-  describe("with a split result rendered", () => {
-    beforeEach(async () => { mount(); await runReview(); });
-
-    test("left panel shows extracted values with provenance markers and baseline comparison", () => {
+    test("shows the evidence on the left and the drafted note on the right — no basis strip", async () => {
+      mount();
+      await runReview();
       const t = text();
       expect(t).toContain("Extraction");
-      expect(t).toContain("document");
-      expect(t).toContain("entered");
-      expect(t).toMatch(/125°\s*\(95°\)/);
+      expect(t).toContain("Note — determination left for you");
+      expect(t).not.toContain("Recommendation and note");
+      expect(t).not.toContain("Rule applied");
+      expect(t).not.toContain("Facts relied on");
+      expect(t).not.toContain("Pend — validation did not pass");
+      expect(t).toContain("Note ready");
+      expect(t).not.toContain("Recommendation visible");
+      expect(t).toContain("extract-only");
     });
 
-    test("right panel carries the basis without severity, guardrails or ambiguity boxes", () => {
+    test("the blank fields carry a placeholder that disappears on click and is never copied", async () => {
+      mount();
+      await runReview();
+      const ta = noteArea();
+      expect(ta).toBeTruthy();
+      expect(ta.value).toContain("Determination and Rationale:\n— reviewer to complete —");
+      expect(ta.value).toContain("Approved Visits:\n— reviewer to complete —");
+      // the reviewer clicks in
+      act(() => { ta.focus(); ta.dispatchEvent(new Event("focusin", { bubbles: true })); });
+      expect(ta.value).not.toContain("— reviewer to complete —");
+      expect(ta.value).toContain("Determination and Rationale:\n\n");
+      // types a determination and copies
+      setInput(ta, ta.value.replace("Determination and Rationale:\n", "Determination and Rationale:\nApproved — reviewer's own rationale.\n").replace("Approved Visits:\n", "Approved Visits:\n8"));
+      const written = [];
+      Object.defineProperty(navigator, "clipboard", { value: { writeText: async (s) => { written.push(s); } }, configurable: true });
+      click(buttonNamed("Copy Note"));
+      await settle();
+      expect(written[0]).toContain("Approved — reviewer's own rationale.");
+      expect(written[0]).toContain("Approved Visits:\n8");
+      expect(written[0]).not.toContain("— reviewer to complete —");
+    });
+
+    test("session log row carries the extract-only mode and one call's cost", async () => {
+      mount();
+      await runReview();
       const t = text();
-      expect(t).toContain("Rule applied");
-      expect(t).toContain("Facts relied on");
-      expect(t).toContain("Citation");
-      expect(t).not.toContain("Severity basis");
-      expect(t).not.toContain("guardrail");
-      expect(t).not.toContain("unverified");
-    });
-
-    test("the note is editable, sized to content, with Copy Note", () => {
-      const ta = Array.from(container.querySelectorAll("textarea")).find((x) => x.value && x.value.includes("Determination and Rationale:"));
-      expect(ta.style.overflow).toBe("hidden");
-      setInput(ta, ta.value + "\n\nREVIEWER EDIT");
-      expect(ta.value).toContain("REVIEWER EDIT");
-      expect(buttonNamed("Copy Note")).toBeTruthy();
-      expect(buttonNamed("Copy Note").disabled).toBe(false);
-    });
-
-    test("raw JSON sections are present and collapsed by default", () => {
-      expect(text()).toContain("Raw extraction JSON");
-      expect(text()).toContain("Raw determination JSON");
-      expect(container.querySelectorAll("pre").length).toBe(0);
+      expect(t).toContain("Session log");
+      expect(t).toContain("Mode");
+      expect(t).toContain("extract-only");
+      expect(t).toContain("380");   // note-assembly output tokens
     });
   });
 
-  test("absence is stated explicitly rather than rendered as nothing", async () => {
-    mockApi({ recommend: { ...splitResult,
-      resolved: { ...sample.resolved, rom: null, romComparison: null, functionalOutcomeScore: null },
-      provenance: { ...sample.provenance, rom: "absent", functionalOutcomeScore: "absent" } } });
-    mount();
-    await runReview();
-    expect(text()).toContain("No range of motion documented in this note");
-    expect(text()).toContain("No standardized outcome measure documented in this note");
-  });
+  describe("Full Review", () => {
+    test("posts the recommendation with the chosen settings and streams the note", async () => {
+      mount();
+      click(buttonNamed("Full Review"));
+      setSelect(selectNamed("Review effort"), "high");
+      setSelect(selectNamed("Thinking"), "off");
+      await runReview();
+      expect(posted("/v1/aionly/compose").length).toBe(0);
+      const rec = posted("/v1/aionly/recommend");
+      expect(rec.length).toBe(1);
+      expect(rec[0][1].mode).toBe("split");
+      expect(rec[0][1].model).toBe("claude-sonnet-5");
+      expect(rec[0][1].effort).toBe("high");
+      expect(rec[0][1].thinking).toBe("off");
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const noteBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(noteBody.ruling.determination).toBe("PARTIAL_DENIAL_TAPER");
+      const t = text();
+      expect(t).toContain("Recommendation and note");
+      expect(t).toContain("Partial Denial — Taper");
+      expect(noteArea().value).toContain("Taper Indicated: streamed.");
+      expect(t).toContain("Recommendation visible");
+      expect(t).toContain("Note complete");
+      expect(t).toContain("full-review · sonnet-5 · effort high · thinking off");
+      expect(t).not.toContain("Benchmarks and guideline applied");
+      expect(t).not.toContain("— reviewer to complete —");
+    });
 
-  test("a source disagreement about the reviewer's own input is still surfaced", async () => {
-    mockApi({ recommend: { ...splitResult, discrepancies: [{ field: "visitsToDate", used: 14, usedSource: "manual", alsoFound: 21, alsoSource: "extracted", note: "Manual entry differs from the value found in the documentation." }] } });
-    mount();
-    await runReview();
-    expect(text()).toContain("1 source disagreement");
-  });
+    test("pre-extraction: choosing a file extracts in the background, and the click reuses it", async () => {
+      mount();
+      const input = container.querySelector('input[type="file"]');
+      Object.defineProperty(input, "files", { value: [new File(["%PDF-1.4 test"], "ie.pdf", { type: "application/pdf" })], configurable: true });
+      act(() => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      await settle();
+      expect(text()).toContain("Extraction ready");
+      expect(posted("/v1/aionly/extract").length).toBe(1);
+      expect(posted("/v1/aionly/extract")[0][1].get("documents")).toBeTruthy();
+      await runReview({ full: true });
+      expect(posted("/v1/aionly/extract").length).toBe(1);
+      const rec = posted("/v1/aionly/recommend")[0][1];
+      expect(rec.extraction.ran).toBe(true);
+      expect(rec.extraction.raw.primaryDiagnosisCode).toBe("S83.101");
+      expect(text()).toContain("extraction cached");
+    });
 
-  test("a prior-note suggestion is offered for confirmation and never auto-applied", async () => {
-    mockApi({ recommend: { ...splitResult, priorNoteSuggestion: { visitsToDate: 14, excerpt: "Approved 14 visits at 2x/week x 7 weeks", message: "Prior note appears to state 14 visits approved. Confirm to use." } } });
-    mount();
-    await runReview({ subsequent: true });
-    expect(text()).toContain("Prior note appears to state 14 visits approved");
-    const before = Array.from(container.querySelectorAll("input")).filter((i) => i.type === "number").map((i) => i.value);
-    expect(before).not.toContain("14");
-    click(buttonNamed("Accept"));
-    const after = Array.from(container.querySelectorAll("input")).filter((i) => i.type === "number").map((i) => i.value);
-    expect(after).toContain("14");
-  });
+    test("a pre-extraction failure is shown and the run reports it rather than proceeding", async () => {
+      axios.post.mockImplementation(async (url) => {
+        if (url.endsWith("/v1/aionly/extract")) { const e = new Error("bad pdf"); e.response = { status: 400, data: { detail: "Unreadable PDF" } }; throw e; }
+        return { data: splitResult };
+      });
+      mount();
+      const input = container.querySelector('input[type="file"]');
+      Object.defineProperty(input, "files", { value: [new File(["x"], "bad.pdf", { type: "application/pdf" })], configurable: true });
+      act(() => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      await settle();
+      expect(text()).toContain("Extraction failed: Unreadable PDF");
+      await runReview({ full: true });
+      expect(text()).toContain("Unable to read the clinical documentation: Unreadable PDF");
+      expect(posted("/v1/aionly/recommend").length).toBe(0);
+    });
 
-  test("a validation failure renders as PEND with its specific failures and no note", async () => {
-    mockApi({ recommend: { ...splitResult, determination: "PEND", determinationSource: "validation",
-      validation: { passed: false, failures: [{ check: "objectiveMeasurePresent", message: "No clinical source was supplied." }] }, runs: [] } });
-    mount();
-    await runReview();
-    const t = text();
-    expect(t).toContain("Pend — validation did not pass");
-    expect(t).toContain("objectiveMeasurePresent");
-    expect(t).toContain("No recommendation was produced for this case.");
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(t).not.toContain("Composed note");
+    describe("with a result rendered", () => {
+      beforeEach(async () => { mount(); await runReview({ full: true }); });
+
+      test("left panel shows extracted values with provenance markers and baseline comparison", () => {
+        const t = text();
+        expect(t).toContain("document");
+        expect(t).toContain("entered");
+        expect(t).toMatch(/125°\s*\(95°\)/);
+      });
+
+      test("right panel carries the basis without severity, guardrails or ambiguity boxes", () => {
+        const t = text();
+        expect(t).toContain("Rule applied");
+        expect(t).toContain("Facts relied on");
+        expect(t).toContain("Citation");
+        expect(t).not.toContain("Severity basis");
+        expect(t).not.toContain("guardrail");
+        expect(t).not.toContain("unverified");
+      });
+
+      test("the note is editable, sized to content, with Copy Note", () => {
+        const ta = noteArea();
+        expect(ta.style.overflow).toBe("hidden");
+        setInput(ta, ta.value + "\n\nREVIEWER EDIT");
+        expect(ta.value).toContain("REVIEWER EDIT");
+        expect(buttonNamed("Copy Note").disabled).toBe(false);
+      });
+
+      test("raw JSON sections are present and collapsed by default", () => {
+        expect(text()).toContain("Raw extraction JSON");
+        expect(text()).toContain("Raw determination JSON");
+        expect(container.querySelectorAll("pre").length).toBe(0);
+      });
+    });
+
+    test("absence is stated explicitly rather than rendered as nothing", async () => {
+      mockApi({ recommend: { ...splitResult,
+        resolved: { ...sample.resolved, rom: null, romComparison: null, functionalOutcomeScore: null },
+        provenance: { ...sample.provenance, rom: "absent", functionalOutcomeScore: "absent" } } });
+      mount();
+      await runReview({ full: true });
+      expect(text()).toContain("No range of motion documented in this note");
+      expect(text()).toContain("No standardized outcome measure documented in this note");
+    });
+
+    test("a source disagreement about the reviewer's own input is still surfaced", async () => {
+      mockApi({ recommend: { ...splitResult, discrepancies: [{ field: "visitsToDate", used: 14, usedSource: "manual", alsoFound: 21, alsoSource: "extracted", note: "Manual entry differs from the value found in the documentation." }] } });
+      mount();
+      await runReview({ full: true });
+      expect(text()).toContain("1 source disagreement");
+    });
+
+    test("a prior-note suggestion is offered for confirmation and never auto-applied", async () => {
+      mockApi({ recommend: { ...splitResult, priorNoteSuggestion: { visitsToDate: 14, excerpt: "Approved 14 visits at 2x/week x 7 weeks", message: "Prior note appears to state 14 visits approved. Confirm to use." } } });
+      mount();
+      await runReview({ full: true, subsequent: true });
+      expect(text()).toContain("Prior note appears to state 14 visits approved");
+      const before = Array.from(container.querySelectorAll("input")).filter((i) => i.type === "number").map((i) => i.value);
+      expect(before).not.toContain("14");
+      click(buttonNamed("Accept"));
+      const after = Array.from(container.querySelectorAll("input")).filter((i) => i.type === "number").map((i) => i.value);
+      expect(after).toContain("14");
+    });
+
+    test("a validation failure renders as PEND with its specific failures and no note", async () => {
+      mockApi({ recommend: { ...splitResult, determination: "PEND", determinationSource: "validation",
+        validation: { passed: false, failures: [{ check: "objectiveMeasurePresent", message: "No clinical source was supplied." }] }, runs: [] } });
+      mount();
+      await runReview({ full: true });
+      const t = text();
+      expect(t).toContain("Pend — validation did not pass");
+      expect(t).toContain("objectiveMeasurePresent");
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(t).not.toContain("Composed note");
+    });
   });
 });
 
 describe("Session log", () => {
-  test("records path, model, effort, thinking, timings, tokens and the recommendation per run", async () => {
+  test("records mode, model, effort, thinking, timings, tokens and the recommendation per run", async () => {
     mount();
-    await runReview();
+    await runReview({ full: true });
     const t = text();
-    expect(t).toContain("Session log");
-    for (const col of ["Path", "Model", "Effort", "Thinking", "Extract s", "Rec visible s", "Note done s", "Rec out tok", "Note out tok", "Recommendation", "Approved"]) {
+    for (const col of ["Mode", "Model", "Effort", "Thinking", "Extract s", "Rec visible s", "Note done s", "Rec out tok", "Note out tok", "Recommendation", "Approved"]) {
       expect(t).toContain(col);
     }
-    expect(t).toContain("PARTIAL_DENIAL_TAPER");
+    expect(t).toContain("full-review");
     expect(t).toContain("4@1x4w");
     expect(t).toContain("420");
     expect(t).toContain("610");
+    // an Extract Only run lands in the same table
+    click(buttonNamed("Extract Only"));
     await act(async () => { buttonNamed(RUN).click(); });
     await settle();
     expect(text()).toContain("2 cases ·");
+    expect(text()).toContain("extract-only");
     click(buttonNamed("Clear"));
     expect(text()).not.toContain("Session log");
   });
@@ -364,7 +400,7 @@ describe("Session log", () => {
     expect(downloadName).toMatch(/^aionly_session_\d{8}_\d{4}\.csv$/);
     const lines = captured[0].trim().split("\n");
     expect(lines.length).toBe(2);
-    expect(lines[0]).toContain("Path,Model,Effort,Thinking,Extract s,Rec visible s,Note done s");
+    expect(lines[0]).toContain("Mode,Model,Effort,Thinking,Extract s,Rec visible s,Note done s");
     const fields = lines[1].match(/("([^"]|"")*"|[^,]*)(,|$)/g).filter((f, i, a) => i < a.length - 1);
     expect(fields.length).toBe(lines[0].split(",").length);
 
