@@ -8422,7 +8422,6 @@ function App() {
 
   // Section 3 — manual overrides
   const [showOverrides, setShowOverrides]           = useState(false);
-  const [showModelOptions, setShowModelOptions]     = useState(false);
   const [diagnosisCodeOverride, setDiagnosisCode]   = useState("");
   const [visitsToDateOverride, setVisitsToDate]     = useState("");
   const [vtdSource, setVtdSource]                   = useState("manual");
@@ -8709,6 +8708,21 @@ function App() {
             AI Auth Demo
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {reviewKind === "full" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: 10, fontSize: 11, color: AIO_C.faint, fontFamily: '"DM Sans", sans-serif' }}
+                   title="Full Review only — shapes the review step, never extraction.">
+                <span>Model</span>
+                <select value={reviewModel} onChange={(e) => setReviewModel(e.target.value)} aria-label="Review model"
+                  style={{ fontSize: 12, padding: "4px 6px", border: `1px solid ${AIO_C.line}`, borderRadius: 6, background: "#fff", color: "#475569", cursor: "pointer" }}>
+                  {REVIEW_MODELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+                <span style={{ marginLeft: 6 }}>Effort</span>
+                <select value={reviewEffort} onChange={(e) => setReviewEffort(e.target.value)} aria-label="Review effort"
+                  style={{ fontSize: 12, padding: "4px 6px", border: `1px solid ${AIO_C.line}`, borderRadius: 6, background: "#fff", color: "#475569", cursor: "pointer" }}>
+                  {REVIEW_EFFORTS.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+            )}
             <button onClick={handleLogout} style={{
               background: "none", border: `1px solid ${AIO_C.line}`, borderRadius: 6, padding: "5px 12px",
               fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: '"DM Sans", sans-serif',
@@ -8769,40 +8783,6 @@ function App() {
                 placeholder="e.g. 2" style={inputBase} />
             </div>
           </div>
-
-          {/* Model options — Full Review only; shapes the review step, never extraction. */}
-          {reviewKind === "full" && (
-            <button type="button" onClick={() => setShowModelOptions((v) => !v)}
-              style={{
-                width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer",
-                padding: 0, marginBottom: showModelOptions ? 14 : 22,
-              }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 8, borderBottom: `1px solid #f1f5f9` }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: AIO_C.muted, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: '"DM Sans", sans-serif' }}>
-                  {showModelOptions ? "▾" : "▸"} Model options
-                </span>
-                <span style={{ fontSize: 11, color: AIO_C.faint, fontFamily: '"DM Sans", sans-serif' }}>
-                  {REVIEW_MODELS.find(([v]) => v === reviewModel)?.[1] || reviewModel} · effort {reviewEffort}
-                </span>
-              </div>
-            </button>
-          )}
-          {reviewKind === "full" && showModelOptions && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 24 }}>
-            <div>
-              {labelEl("Review model")}
-              <select value={reviewModel} onChange={(e) => setReviewModel(e.target.value)} aria-label="Review model" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
-                {REVIEW_MODELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-              </select>
-            </div>
-            <div>
-              {labelEl("Review effort")}
-              <select value={reviewEffort} onChange={(e) => setReviewEffort(e.target.value)} aria-label="Review effort" style={{ ...inputBase, background: "#fff", cursor: "pointer" }}>
-                {REVIEW_EFFORTS.map((v) => <option key={v} value={v}>{v}</option>)}
-              </select>
-            </div>
-          </div>
-          )}
 
           {/* SECTION 2 — CLINICAL SOURCE */}
           {sectionHead(2, "Clinical source — any, all, or none")}
