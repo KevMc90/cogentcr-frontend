@@ -142,6 +142,11 @@ describe("AI Auth Demo form", () => {
     expect(selectNamed("Review path")).toBeNull();
     click(buttonNamed("Full Review"));
     expect(text()).toContain("recommends, and writes the full note");
+    // collapsed by default, summarising the current choice
+    expect(text()).toContain("Model options");
+    expect(text()).toContain("Sonnet 5 · effort low");
+    expect(selectNamed("Review model")).toBeNull();
+    click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent.includes("Model options")));
     expect(selectNamed("Review model").value).toBe("claude-sonnet-5");
     expect(selectNamed("Review effort").value).toBe("low");
     expect(selectNamed("Thinking")).toBeNull();
@@ -227,6 +232,7 @@ describe("AI Auth Demo form", () => {
     test("posts the recommendation with the chosen settings and streams the note", async () => {
       mount();
       click(buttonNamed("Full Review"));
+      click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent.includes("Model options")));
       setSelect(selectNamed("Review effort"), "high");
       await runReview();
       expect(posted("/v1/aionly/compose").length).toBe(0);
