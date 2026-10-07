@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import { parseRequestedFreqWeeks, formatVisitLine } from "../utils/visitComparison";
 import { buildUNFNote } from "../utils/unfNote";
+import MemberTimeline from "./MemberTimeline";
 
 const API_BASE =
   process.env.REACT_APP_API_BASE ||
@@ -17,6 +18,27 @@ const PEND_REASONS = [
   { value: "diagnosis_unsupported",       label: "Diagnosis codes not supported by documentation",     defaultDetail: "The submitted documentation does not support the diagnosis codes provided. Please include documentation that clearly supports the listed diagnosis." },
   { value: "other",                       label: "Other (describe below)",                              defaultDetail: "" },
 ];
+
+// Stage 1 decision bar: "Request information (pre-filled with what is
+// missing)". assessment.d3.gaps carries the engine's own field-name gap list
+// (rapidnote-backend/utils/ruleEngine.js's missingCritical: "poc", "goals"/
+// "goalStatus", "objectiveMeasures", "noteDate"/"evalDate",
+// "diagnosisCodes", "functionalLimitations") — this maps the first
+// recognized one to a PEND_REASONS entry so the field pre-selects instead of
+// defaulting to blank. Unmapped/unrecognized gaps (including
+// "functionalLimitations", which has no close PEND_REASONS match) simply
+// leave nothing pre-selected — the reviewer picks manually, same as today.
+const GAP_TO_PEND_REASON = {
+  poc: "poc_incomplete", goals: "poc_incomplete", goalStatus: "poc_incomplete",
+  objectiveMeasures: "functional_measures_missing",
+  noteDate: "eval_outdated", evalDate: "eval_outdated",
+  diagnosisCodes: "diagnosis_unsupported",
+};
+function guessPendReason(gaps) {
+  if (!Array.isArray(gaps)) return "";
+  for (const g of gaps) if (GAP_TO_PEND_REASON[g]) return GAP_TO_PEND_REASON[g];
+  return "";
+}
 
 // ── DESIGN TOKENS ──────────────────────────────────────────────────────────────
 const NAVY      = "#1a3a5c";
@@ -499,6 +521,28 @@ async function fetchAuditEvents(setAuditLog, setAuditLogLoading) {
     setAuditLog(null); // null signals fetch error
   } finally {
     setAuditLogLoading(false);
+  }
+}
+
+// ── PLAIN-LANGUAGE CASE TIMELINE FETCH ──────────────────────────────────────────
+// Stage 1: "The action log lists numeric event codes" → "A plain-language
+// case timeline". Additive alongside the raw Audit Log above, not a
+// replacement — narrated by rapidnote-backend's utils/caseTimeline.js.
+async function fetchCaseTimeline(caseId, setTimeline, setLoading) {
+  const token = localStorage.getItem("cogentus_token") || "";
+  if (!token || !caseId) return;
+  setLoading(true);
+  try {
+    const r = await fetch(`${API_BASE}/v1/submissions/${caseId}/timeline`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    setTimeline(data.timeline || []);
+  } catch {
+    setTimeline(null); // null signals fetch error
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -1945,8 +1989,9 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
   onPendReasonChange, onPendDetailsChange, onPendSubmit,
   onApproveChecksChange, onApproveSubmit,
   onDenyNoteChange, onDenySignoffSubmit,
+  onSendToMdSubmit,
   onCancelAction, onNavigate, hideQueueNav,
-  onHoldCase, onReleaseCase, onRationaleChange }) {
+  onHoldCase, onReleaseCase, onRationaleChange, canDecide }) {
 
   const decided    = decisions[kase.caseId];
   const rec        = kase.contract?.recommendation;
@@ -2027,15 +2072,136 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
             the note into BBI isn't tied to which button the reviewer clicked. */}
         {kase.contract && <UNFNotePanel kase={kase} onReleaseCase={onReleaseCase} />}
 
-        {/* Approve / Partial Denial / Full Denial / Pend / Hold / Return to Queue
-            removed from this panel -- the right column is note-only now (copy/adjust
-            the UNF note, paste into BBI). The transient action-state panels (deny
-            confirm, pend/partial/deny detail entry) and the idle action-button row
-            used to render here; see git history on this file for that code if a
-            future cockpit-as-popup design brings determination actions back in. */}
-        {!decided && !kase.contract && actionState === "idle" && (
+        {/* Stage 1 decision bar. Rebuilt from the "demo cleanup" state that had
+            removed every action from this panel (see git history before this
+            change) — the handlers/audit-event wiring underneath were already
+            correct, this restores the buttons and adds the two the Stage 1
+            spec wants that didn't exist before: a distinct "Edit and approve"
+            (requires an actually-changed rationale) and "Send to physician
+            review" (routes to the existing MD co-sign queue without
+            finalizing). Gated on canDecide (reviewer/medical_director only —
+            matches the backend's decisionGuard, so a master/admin viewing a
+            case here never sees a button the server would 403). */}
+        {!decided && kase.contract && !canDecide && (
+          <div style={{ padding: "14px", borderRadius: 8, border: "1px dashed #e2e8f0", background: "#f8fafc", textAlign: "center" }}>
+            <span style={{ fontSize: 12, color: "#94a3b8", fontFamily: FONTS.body }}>View only — only a reviewer or medical director can record a determination.</span>
+          </div>
+        )}
+
+        {!decided && !kase.contract && (
           <div style={{ padding: "14px", borderRadius: 8, border: "1px dashed #e2e8f0", background: "#f8fafc", textAlign: "center" }}>
             <span style={{ fontSize: 12, color: "#94a3b8", fontFamily: FONTS.body }}>Awaiting engine...</span>
+          </div>
+        )}
+
+        {!decided && kase.contract && canDecide && actionState === "idle" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            <ActionBtn kbd="A" label="Approve as recommended" color="#166534" bg="#f0fdf4" border="#86efac" onClick={() => onAction("approve")} />
+            <ActionBtn kbd="E" label="Edit and approve"       color={NAVY}    bg="#eff6ff" border="#93c5fd" onClick={() => onAction("edit_approve")} />
+            <ActionBtn kbd="P" label="Partial approval"       color="#92400e" bg="#fffbeb" border="#fcd34d" onClick={() => onAction("partial")} />
+            <ActionBtn kbd="D" label="Full denial"            color="#991b1b" bg="#fef2f2" border="#fca5a5" onClick={() => onAction("deny")} />
+            <ActionBtn kbd="N" label="Request information"    color="#1d4ed8" bg="#eff6ff" border="#93c5fd" onClick={() => onAction("pend")} />
+            <ActionBtn kbd="M" label="Send to physician review" color="#6b21a8" bg="#faf5ff" border="#d8b4fe" onClick={() => onAction("send_md")} />
+          </div>
+        )}
+
+        {!decided && canDecide && actionState === "edit_approve" && (() => {
+          const engineRationale = (rec?.rationale || "").trim();
+          const canSubmit = rationaleEdit.trim().length > 0 && rationaleEdit.trim() !== engineRationale;
+          return (
+            <div style={{ padding: "12px 14px", borderRadius: 8, border: `1.5px solid ${NAVY_MID}`, background: "#eff6ff" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: FONTS.heading, marginBottom: 2 }}>Edit and approve</div>
+              <div style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>Change the rationale below before approving — a one-line reason is required.</div>
+              <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color={NAVY} />
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <ActionBtn kbd="↵" label="Submit" color="#fff" bg={canSubmit ? NAVY : "#cbd5e1"} border={canSubmit ? NAVY : "#cbd5e1"} disabled={!canSubmit} onClick={onApproveSubmit} compact />
+                <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+              </div>
+            </div>
+          );
+        })()}
+
+        {!decided && canDecide && actionState === "partial_input" && (
+          <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #fcd34d", background: "#fffbeb" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", fontFamily: FONTS.heading, marginBottom: 6 }}>Partial approval — visits</div>
+            <input
+              type="number" min={0} value={partialVisits}
+              onChange={e => onPartialVisitsChange(e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1.5px solid #fcd34d", fontSize: 13, fontFamily: FONTS.body, boxSizing: "border-box", marginBottom: 8 }}
+            />
+            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#92400e" />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <ActionBtn kbd="↵" label="Submit" color="#fff" bg="#92400e" border="#92400e" onClick={onPartialSubmit} compact />
+              <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+            </div>
+          </div>
+        )}
+
+        {!decided && canDecide && actionState === "deny_confirm" && (
+          <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #fca5a5", background: "#fef2f2" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#991b1b", fontFamily: FONTS.heading, marginBottom: 6 }}>Deny this request?</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <ActionBtn kbd="↵" label="Continue" color="#fff" bg="#991b1b" border="#991b1b" onClick={onDenyConfirm} compact />
+              <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+            </div>
+          </div>
+        )}
+
+        {!decided && canDecide && actionState === "deny_signoff" && (
+          <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #fca5a5", background: "#fef2f2" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#991b1b", fontFamily: FONTS.heading, marginBottom: 6 }}>Full denial</div>
+            <textarea
+              value={denyNote} onChange={e => onDenyNoteChange(e.target.value)}
+              placeholder="Internal reviewer note (optional)..." rows={2}
+              style={{ width: "100%", borderRadius: 6, border: "1.5px solid #fca5a5", padding: "7px 10px", fontSize: 12, fontFamily: FONTS.body, resize: "vertical", boxSizing: "border-box" }}
+            />
+            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#991b1b" />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <ActionBtn kbd="↵" label="Confirm denial" color="#fff" bg="#991b1b" border="#991b1b" onClick={onDenySignoffSubmit} compact />
+              <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+            </div>
+          </div>
+        )}
+
+        {!decided && canDecide && actionState === "pend_input" && (
+          <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #93c5fd", background: "#eff6ff" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#1d4ed8", fontFamily: FONTS.heading, marginBottom: 6 }}>Request information</div>
+            <select
+              value={pendReason}
+              onChange={e => {
+                onPendReasonChange(e.target.value);
+                const r = PEND_REASONS.find(p => p.value === e.target.value);
+                if (r) onPendDetailsChange(r.defaultDetail);
+              }}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1.5px solid #93c5fd", fontSize: 12, fontFamily: FONTS.body, marginBottom: 8, boxSizing: "border-box" }}
+            >
+              <option value="">Select a reason...</option>
+              {PEND_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+            <textarea
+              value={pendDetails} onChange={e => onPendDetailsChange(e.target.value)}
+              rows={3}
+              style={{ width: "100%", borderRadius: 6, border: "1.5px solid #93c5fd", padding: "7px 10px", fontSize: 12, fontFamily: FONTS.body, resize: "vertical", boxSizing: "border-box" }}
+            />
+            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#1d4ed8" />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <ActionBtn kbd="↵" label="Send request" color="#fff" bg={pendReason ? "#1d4ed8" : "#93c5fd"} border={pendReason ? "#1d4ed8" : "#93c5fd"} disabled={!pendReason} onClick={onPendSubmit} compact />
+              <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+            </div>
+          </div>
+        )}
+
+        {!decided && canDecide && actionState === "send_md_confirm" && (
+          <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #d8b4fe", background: "#faf5ff" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#6b21a8", fontFamily: FONTS.heading, marginBottom: 2 }}>Send to physician review</div>
+            <div style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body, marginBottom: 6 }}>
+              Your determination ({rec?.determination}, {rec?.approvedVisits} visits) is recorded, but routed to the medical director co-sign queue instead of finalizing. A one-line reason is required.
+            </div>
+            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#6b21a8" />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <ActionBtn kbd="↵" label="Send" color="#fff" bg={rationaleEdit.trim() ? "#6b21a8" : "#d8b4fe"} border={rationaleEdit.trim() ? "#6b21a8" : "#d8b4fe"} disabled={!rationaleEdit.trim()} onClick={onSendToMdSubmit} compact />
+              <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+            </div>
           </div>
         )}
 
@@ -2294,6 +2460,60 @@ function AuditLogPanel({ events, loading, onClose, onRefresh }) {
   );
 }
 
+// ── PLAIN-LANGUAGE CASE TIMELINE PANEL ──────────────────────────────────────────
+function CaseTimelinePanel({ timeline, loading, onClose, onRefresh }) {
+  return (
+    <div style={{
+      position: "fixed", top: 0, right: 0, bottom: 0, width: 420,
+      background: "#fff", boxShadow: "-4px 0 24px rgba(0,0,0,0.15)",
+      display: "flex", flexDirection: "column", zIndex: 100,
+      animation: "rn-slidein 0.18s ease-out",
+    }}>
+      <div style={{ padding: "14px 20px", background: NAVY, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading }}>Case Timeline</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onRefresh} style={{
+            background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.25)",
+            borderRadius: 5, padding: "3px 10px", color: "rgba(255,255,255,0.8)", fontSize: 12, cursor: "pointer", fontFamily: FONTS.body,
+          }}>Refresh</button>
+          <button onClick={onClose} style={{
+            background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.28)",
+            borderRadius: 5, padding: "3px 10px", color: "#fff", fontSize: 12, cursor: "pointer", fontFamily: FONTS.body,
+          }}>Close</button>
+        </div>
+      </div>
+      <div style={{ padding: "12px 20px 16px", overflowY: "auto", flex: 1 }}>
+        {loading ? (
+          <LoadingPulse label="Loading timeline..." />
+        ) : timeline === null ? (
+          <div style={{ padding: "24px 0", textAlign: "center" }}>
+            <div style={{ color: "#991b1b", fontSize: 13, fontFamily: FONTS.body }}>Failed to load case timeline</div>
+            <button onClick={onRefresh} style={{ marginTop: 10, padding: "5px 14px", borderRadius: 6, border: "1px solid #e2e8f0", background: "#fff", fontSize: 12, cursor: "pointer", fontFamily: FONTS.body }}>
+              Retry
+            </button>
+          </div>
+        ) : timeline.length === 0 ? (
+          <div style={{ padding: "24px 0", textAlign: "center", color: "#9ca3af", fontSize: 13, fontFamily: FONTS.body, fontStyle: "italic" }}>
+            Nothing recorded for this case yet.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {timeline.map((entry, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ flexShrink: 0, width: 7, height: 7, borderRadius: "50%", background: NAVY_MID, marginTop: 5 }} />
+                <div>
+                  <div style={{ fontSize: 12, color: "#374151", fontFamily: FONTS.body, lineHeight: 1.5 }}>{entry.text}</div>
+                  <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: FONTS.body, marginTop: 1 }}>{fmtDateTime(entry.at)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── SUBMISSIONS PANEL ──────────────────────────────────────────────────────────
 function SubmissionsPanel({ submissions, onClose, onForward, onRefresh }) {
   const [rmiTargetId, setRmiTargetId] = useState(null);
@@ -2422,6 +2642,10 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
   const [showAuditLog, setShowAuditLog]   = useState(false);
   const [auditLog, setAuditLog]           = useState([]);
   const [auditLogLoading, setAuditLogLoading] = useState(false);
+  // Stage 1 plain-language case timeline (additive alongside the raw log above)
+  const [showCaseTimeline, setShowCaseTimeline] = useState(false);
+  const [caseTimeline, setCaseTimeline]         = useState([]);
+  const [caseTimelineLoading, setCaseTimelineLoading] = useState(false);
   // Phase 5: plan config
   const [plans, setPlans]                 = useState([]);
   const [selectedPlanId, setSelectedPlanId] = useState(liveCase?.planRuleSet?.planId || null);
@@ -2431,6 +2655,21 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
   const [showSubmissions, setShowSubmissions] = useState(false);
 
   const liveCaseId = liveCase?.caseId ?? null;
+
+  // Stage 1 decision bar: only a reviewer or medical_director may issue a
+  // determination here — matches rapidnote-backend/utils/decisionGuard.js
+  // server-side (master/admin are deliberately excluded there even though
+  // master has UI access to Cockpit via MasterShell; this hides the buttons
+  // for that same reason rather than showing controls the backend will
+  // reject with a 403). CLAUDE.md rule 2: enforced in the backend already —
+  // this is the UI half of "not only the UI."
+  const canDecide = user?.role === "reviewer" || user?.role === "medical_director";
+
+  // Stage 1 "Rapid Note": whether the plan selector has been touched this
+  // session — once it has, the engine effect below switches from "fetch the
+  // cached review" to "live-compute with the overridden plan", since a
+  // what-if plan exploration should never be cached over the real one.
+  const userChangedPlanRef = useRef(false);
 
   const liveCaseEntry = liveCase ? {
     caseId:          liveCase.caseId,
@@ -2463,51 +2702,89 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
     ? (plans.find(p => p.plan_id === selectedPlanId) || null)
     : null;
 
-  // Reset cursor only when a new live case arrives
+  // Reset cursor only when a new live case arrives. Also resets the plan-
+  // override ref (code review caught this missing: App.js never remounts
+  // Cockpit with a per-case `key=`, so without this reset, overriding the
+  // plan on one case permanently disabled the cached-review fast path —
+  // see the engine-fetch effect below — for every later case in the
+  // session, not just the one the reviewer was actually exploring.
   useEffect(() => {
     if (!liveCaseId) return;
     setCursor(0);
     setActionState("idle");
+    userChangedPlanRef.current = false;
   }, [liveCaseId]);
 
-  // Engine call — re-runs when live case or selected plan changes
+  // Engine call — re-runs when live case or selected plan changes.
+  //
+  // Stage 1 "Rapid Note button: if a review exists, open it; if not, run
+  // it." As long as the plan selector hasn't been touched, this now tries
+  // GET /v1/submissions/:id/review first — a cached copy of exactly this
+  // same contract, persisted at intake (see rapidnote-backend's
+  // POST /v1/submit-with-docs). That's a plain JSONB read, not a model call,
+  // so it satisfies the "<1s" acceptance bar for an already-generated
+  // review. Only falls through to the live POST /v1/evaluate compute (same
+  // as before) when there's no cached copy yet (contract: null, e.g. a case
+  // with no extraction) or the reviewer has explicitly overridden the plan
+  // to explore a what-if, which must never be served from cache.
   useEffect(() => {
     if (!liveCase || !liveCaseId) return;
     setLiveContract(null);
     setEngineState("loading");
     const controller = new AbortController();
-    const activePlan = selectedPlanId && plans.length > 0
-      ? (plans.find(p => p.plan_id === selectedPlanId) || null) : null;
-    const planRuleSet = activePlan
-      ? { planId: activePlan.plan_id, planName: activePlan.plan_name, payer: activePlan.payer,
-          autoApproveThreshold: activePlan.auto_approve_threshold,
-          maxVisitsPerEpisode:  activePlan.max_visits_per_episode }
-      : (liveCase.planRuleSet || null);
-    fetch(`${API_BASE}/v1/evaluate`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        caseId:           liveCaseId,
-        discipline:       liveCase.discipline,
-        reviewType:       liveCase.reviewType,
-        // Explicit override, same as discipline/reviewType above — /v1/evaluate's own
-        // merge (requestedVisits ?? extractedMetrics.requestedVisits ?? 0) prefers this
-        // over whatever's in extractedMetrics, so a stale/mismatched value there (e.g.
-        // from the object-spread bug fixed in App.js's handleGetCase/handleOpenSearchCase)
-        // can't silently override the actually-submitted visit count again.
-        requestedVisits:  liveCase.requestedVisits ?? undefined,
-        extractedMetrics: liveCase.metrics,
-        planRuleSet,
-      }),
-      signal: controller.signal,
-    })
-      .then(r => { if (!r.ok) throw new Error("Engine " + r.status); return r.json(); })
-      .then(contract => { setLiveContract(contract); setEngineState("ok"); })
-      .catch(err => {
+    const token = localStorage.getItem("cogentus_token") || "";
+
+    const runLiveEvaluate = () => {
+      const activePlan = selectedPlanId && plans.length > 0
+        ? (plans.find(p => p.plan_id === selectedPlanId) || null) : null;
+      const planRuleSet = activePlan
+        ? { planId: activePlan.plan_id, planName: activePlan.plan_name, payer: activePlan.payer,
+            autoApproveThreshold: activePlan.auto_approve_threshold,
+            maxVisitsPerEpisode:  activePlan.max_visits_per_episode }
+        : (liveCase.planRuleSet || null);
+      return fetch(`${API_BASE}/v1/evaluate`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          caseId:           liveCaseId,
+          discipline:       liveCase.discipline,
+          reviewType:       liveCase.reviewType,
+          // Explicit override, same as discipline/reviewType above — /v1/evaluate's own
+          // merge (requestedVisits ?? extractedMetrics.requestedVisits ?? 0) prefers this
+          // over whatever's in extractedMetrics, so a stale/mismatched value there (e.g.
+          // from the object-spread bug fixed in App.js's handleGetCase/handleOpenSearchCase)
+          // can't silently override the actually-submitted visit count again.
+          requestedVisits:  liveCase.requestedVisits ?? undefined,
+          extractedMetrics: liveCase.metrics,
+          planRuleSet,
+        }),
+        signal: controller.signal,
+      })
+        .then(r => { if (!r.ok) throw new Error("Engine " + r.status); return r.json(); })
+        .then(contract => { setLiveContract(contract); setEngineState("ok"); });
+    };
+
+    const run = async () => {
+      try {
+        if (!userChangedPlanRef.current && token) {
+          const r = await fetch(`${API_BASE}/v1/submissions/${liveCaseId}/review`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal,
+          });
+          if (r.ok) {
+            const data = await r.json();
+            if (data.contract) { setLiveContract(data.contract); setEngineState("ok"); return; }
+            // contract: null (nothing cached/extracted yet) — fall through below.
+          }
+        }
+        await runLiveEvaluate();
+      } catch (err) {
         if (err.name === "AbortError") return;
         setLiveContract(buildFallbackContract(liveCase.metrics, liveCase.ruling));
         setEngineState("offline");
-      });
+      }
+    };
+    run();
     return () => controller.abort();
   }, [liveCaseId, selectedPlanId]); // eslint-disable-line
 
@@ -2521,6 +2798,11 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
   useEffect(() => {
     if (showAuditLog) fetchAuditEvents(setAuditLog, setAuditLogLoading);
   }, [showAuditLog]);
+
+  // Fetch plain-language case timeline when panel opens
+  useEffect(() => {
+    if (showCaseTimeline && kase?.caseId) fetchCaseTimeline(kase.caseId, setCaseTimeline, setCaseTimelineLoading);
+  }, [showCaseTimeline, kase?.caseId]);
 
   const recordDecision = useCallback((determination, approvedVisits, extras = {}) => {
     const caseId = kase.caseId;
@@ -2565,33 +2847,55 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
           reviewerRationale: extras.reviewerRationale || "",
           pendReason:        extras.pendReason  || null,
           pendDetails:       extras.pendDetails || null,
+          forceMdReview:     !!extras.forceMdReview,
         }),
       })
-        .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-        .then(() => setAuditStates(prev => ({ ...prev, [caseId]: "recorded" })))
-        .catch(() => setAuditStates(prev => ({ ...prev, [caseId]: "error" })));
+        .then(r => {
+          if (r.status === 403) { setAuditStates(prev => ({ ...prev, [caseId]: "forbidden" })); throw new Error("Forbidden"); }
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(() => setAuditStates(prev => (prev[caseId] === "forbidden" ? prev : { ...prev, [caseId]: "recorded" })))
+        .catch(() => setAuditStates(prev => (prev[caseId] === "forbidden" ? prev : { ...prev, [caseId]: "error" })));
     }
   }, [kase]); // eslint-disable-line
 
+  // Stage 1 decision bar. "approve" is the one-click "Approve as
+  // recommended" path — straight to recordDecision, no intermediate state,
+  // so a routine case really can be decided in the single click the
+  // acceptance bar asks for. Every other action still goes through its own
+  // confirm/input state, same as before.
   const handleAction = useCallback((type) => {
-    if (decisions[kase.caseId] || !kase.contract) return;
+    if (!canDecide || decisions[kase.caseId] || !kase.contract) return;
     const rec = kase.contract.recommendation;
-    // Pre-fill rationale from engine for reviewer to edit
-    setRationaleEdit(rec.rationale || "");
     if (type === "approve") {
+      recordDecision(
+        rec.determination?.startsWith("Approved") ? rec.determination : "Approved",
+        rec.approvedVisits ?? 0,
+        { reviewerRationale: rec.rationale || "" }
+      );
+      return;
+    }
+    // Every other path pre-fills the rationale from the engine for the
+    // reviewer to edit/confirm.
+    setRationaleEdit(rec.rationale || "");
+    if (type === "edit_approve") {
       setApproveChecks([]);
-      setActionState("approve_checklist");
+      setActionState("edit_approve");
     } else if (type === "partial") {
       setPartialVisits(String(rec.approvedVisits ?? ""));
       setActionState("partial_input");
     } else if (type === "deny") {
       setActionState("deny_confirm");
     } else if (type === "pend") {
-      setPendReason("");
-      setPendDetails("");
+      const guessed = guessPendReason(kase.contract?.assessment?.d3?.gaps);
+      setPendReason(guessed);
+      setPendDetails(guessed ? (PEND_REASONS.find(r => r.value === guessed)?.defaultDetail || "") : "");
       setActionState("pend_input");
+    } else if (type === "send_md") {
+      setActionState("send_md_confirm");
     }
-  }, [kase, decisions]);
+  }, [kase, decisions, canDecide, recordDecision]);
 
   const handleDenyConfirm = useCallback(() => {
     setDenyNote("");
@@ -2607,18 +2911,40 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
     recordDecision("Pend", 0, { pendReason, pendDetails, reviewerRationale: rationaleEdit });
   }, [pendReason, pendDetails, rationaleEdit, recordDecision]);
 
+  // "Edit and approve": unlike the one-click "approve" above, this requires
+  // the reviewer to have actually changed the pre-filled rationale — "editing
+  // a recommendation requires a one-line reason" (root CLAUDE.md / the build
+  // plan's decision-bar spec), not just re-submitting the engine's own text
+  // under a different button. Enforced here (disables the submit button,
+  // see DeterminationZone) as well as by this guard.
   const handleApproveSubmit = useCallback(() => {
     const rec = kase.contract?.recommendation;
+    const engineRationale = rec?.rationale || "";
+    if (rationaleEdit.trim() === engineRationale.trim() || !rationaleEdit.trim()) return;
     recordDecision(
       rec?.determination?.startsWith("Approved") ? rec.determination : "Approved",
       rec?.approvedVisits ?? 0,
-      { approveChecks: [...approveChecks], reviewerRationale: rationaleEdit }
+      { approveChecks: [...approveChecks], reviewerRationale: rationaleEdit, isEdited: true }
     );
   }, [approveChecks, rationaleEdit, kase, recordDecision]);
 
   const handleDenySignoffSubmit = useCallback(() => {
     recordDecision("Full Denial", 0, { denyNote, reviewerRationale: rationaleEdit });
   }, [denyNote, rationaleEdit, recordDecision]);
+
+  // "Send to physician review": the reviewer's own (possibly edited)
+  // determination is recorded, same as any other action, but forceMdReview
+  // routes it to pending_md_review instead of finalizing — see
+  // rapidnote-backend's POST /v1/audit-event, which now accepts that flag.
+  const handleSendToMdSubmit = useCallback(() => {
+    if (!rationaleEdit.trim()) return;
+    const rec = kase.contract?.recommendation;
+    recordDecision(
+      rec?.determination || "Pend",
+      rec?.approvedVisits ?? 0,
+      { reviewerRationale: rationaleEdit, forceMdReview: true }
+    );
+  }, [rationaleEdit, kase, recordDecision]);
 
   const handleNavigate = useCallback((i) => {
     setCursor(i);
@@ -2630,24 +2956,32 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
     setDenyNote("");
   }, []);
 
-  // Keyboard handler
+  // Keyboard handler. A/P/D/N/M map to the decision bar's five actions when
+  // idle and a decision can still be made, restoring the shortcuts the demo
+  // cleanup pass had disabled along with the buttons themselves (see
+  // DeterminationZone — the buttons are back now too). Every other shortcut
+  // (Escape/V/J/K) is unchanged.
   useEffect(() => {
     const handler = (e) => {
       const tag = document.activeElement?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
       const key = e.key.toLowerCase();
-      if (key === "escape") { setActionState("idle"); setPendReason(""); setPendDetails(""); setApproveChecks([]); setDenyNote(""); setShowDocs(false); setShowAuditLog(false); setShowSubmissions(false); return; }
+      if (key === "escape") { setActionState("idle"); setPendReason(""); setPendDetails(""); setApproveChecks([]); setDenyNote(""); setShowDocs(false); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); return; }
       if (key === "v") { setShowDocs(s => !s); return; }
       if (!hideQueueNav && key === "j" && cursor > 0)                { handleNavigate(cursor - 1); return; }
       if (!hideQueueNav && key === "k" && cursor < queue.length - 1) { handleNavigate(cursor + 1); return; }
-      // Demo cleanup — A/P/D/N determination shortcuts disabled along with the
-      // buttons/hint chips themselves. With no determination UI in this panel, a
-      // stray keypress during a demo must not silently change actionState. J/K/V
-      // above are untouched.
+      if (canDecide && actionState === "idle" && !decisions[kase?.caseId] && kase?.contract) {
+        if (key === "a") { handleAction("approve"); return; }
+        if (key === "e") { handleAction("edit_approve"); return; }
+        if (key === "p") { handleAction("partial"); return; }
+        if (key === "d") { handleAction("deny"); return; }
+        if (key === "n") { handleAction("pend"); return; }
+        if (key === "m") { handleAction("send_md"); return; }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [cursor, hideQueueNav, queue.length, handleNavigate]);
+  }, [cursor, hideQueueNav, queue.length, handleNavigate, canDecide, actionState, decisions, kase, handleAction]);
 
   const decided      = !!decisions[kase.caseId];
   const decidedCount = Object.keys(decisions).length;
@@ -2677,7 +3011,7 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
             fontSize: 11, fontFamily: FONTS.body, fontWeight: 700,
           }}>Cockpit</div>
           <button
-            onClick={() => { setShowAuditLog(s => !s); setShowDocs(false); setShowSubmissions(false); }}
+            onClick={() => { setShowAuditLog(s => !s); setShowDocs(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
             style={{
               background: showAuditLog ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)",
               border: "1px solid rgba(255,255,255,0.2)",
@@ -2688,7 +3022,18 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
             Audit Log
           </button>
           <button
-            onClick={() => { setShowSubmissions(s => !s); setShowDocs(false); setShowAuditLog(false); if (!showSubmissions) fetchSubmissions(setSubmissions); }}
+            onClick={() => { setShowCaseTimeline(s => !s); setShowDocs(false); setShowSubmissions(false); setShowAuditLog(false); }}
+            style={{
+              background: showCaseTimeline ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 5, padding: "3px 10px", color: showCaseTimeline ? "#fff" : "rgba(255,255,255,0.65)",
+              fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
+            }}
+          >
+            Timeline
+          </button>
+          <button
+            onClick={() => { setShowSubmissions(s => !s); setShowDocs(false); setShowAuditLog(false); setShowCaseTimeline(false); if (!showSubmissions) fetchSubmissions(setSubmissions); }}
             style={{
               background: showSubmissions ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)",
               border: "1px solid rgba(255,255,255,0.2)",
@@ -2701,7 +3046,7 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
           {plans.length > 0 && (
             <select
               value={selectedPlanId || ""}
-              onChange={e => setSelectedPlanId(e.target.value || null)}
+              onChange={e => { userChangedPlanRef.current = true; setSelectedPlanId(e.target.value || null); }}
               style={{
                 background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
                 borderRadius: 5, padding: "3px 8px", color: "#fff",
@@ -2768,9 +3113,16 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
           <KbdChip k="J" label="prev" />
           <KbdChip k="K" label="next" />
           <KbdChip k="V" label="docs" />
-          {/* Demo cleanup — A/P/D/N hint chips removed along with the determination
-              buttons themselves (the corresponding keyboard handlers are disabled
-              below, so these would have been misleading if left showing). */}
+          {canDecide && !decided && (
+            <>
+              <KbdChip k="A" label="approve" />
+              <KbdChip k="E" label="edit" />
+              <KbdChip k="P" label="partial" />
+              <KbdChip k="D" label="deny" />
+              <KbdChip k="N" label="info" />
+              <KbdChip k="M" label="to MD" />
+            </>
+          )}
           {user && (
             <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: FONTS.body, borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: 14 }}>
               {user.name || user.email}
@@ -2781,12 +3133,27 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
 
       {/* ── Three-zone body — Evidence 30 / Recommendation 36 / Determination 34 ── */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 1, overflow: "hidden" }}>
-        <div style={{ width: "30%", minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
-          <EvidenceZone
-            kase={kase}
-            onToggleDocs={() => { setShowDocs(s => !s); setShowAuditLog(false); setShowSubmissions(false); }}
-            showDocs={showDocs}
-          />
+        {/* Left column: Stage 1 member timeline (cross-service, every request
+            line for this member) stacked above today's current-case Evidence
+            panel — each with its own independent scroll, rather than one
+            long scrolling column, so a long cross-service history doesn't
+            push this case's own evidence out of easy reach. */}
+        <div style={{ width: "30%", minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ flex: "0 0 38%", minHeight: 0, borderBottom: "1px solid #e2e8f0" }}>
+            <MemberTimeline
+              token={localStorage.getItem("cogentus_token") || ""}
+              memberId={kase.memberId && kase.memberId !== "—" ? kase.memberId : null}
+              currentCaseId={kase.caseId}
+              apiBase={API_BASE}
+            />
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+            <EvidenceZone
+              kase={kase}
+              onToggleDocs={() => { setShowDocs(s => !s); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
+              showDocs={showDocs}
+            />
+          </div>
         </div>
         <div style={{ width: "36%", minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
           <RecommendationZone kase={kase} engineState={engineState} selectedPlan={selectedPlan} />
@@ -2816,6 +3183,8 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
             onApproveSubmit={handleApproveSubmit}
             onDenyNoteChange={setDenyNote}
             onDenySignoffSubmit={handleDenySignoffSubmit}
+            onSendToMdSubmit={handleSendToMdSubmit}
+            canDecide={canDecide}
             onCancelAction={() => { setActionState("idle"); setPendReason(""); setPendDetails(""); setApproveChecks([]); setDenyNote(""); setRationaleEdit(""); }}
             onNavigate={handleNavigate}
             hideQueueNav={!!hideQueueNav}
@@ -2834,6 +3203,14 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
           loading={auditLogLoading}
           onClose={() => setShowAuditLog(false)}
           onRefresh={() => fetchAuditEvents(setAuditLog, setAuditLogLoading)}
+        />
+      )}
+      {showCaseTimeline && (
+        <CaseTimelinePanel
+          timeline={caseTimeline}
+          loading={caseTimelineLoading}
+          onClose={() => setShowCaseTimeline(false)}
+          onRefresh={() => kase?.caseId && fetchCaseTimeline(kase.caseId, setCaseTimeline, setCaseTimelineLoading)}
         />
       )}
       {showSubmissions && (
