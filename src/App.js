@@ -3010,18 +3010,29 @@ function ReviewerShell({ user, token, onLogout }) {
   // the cockpit, and "home" is the only place to see and batch-release them.
   // Previously "cockpit" replaced "home" outright whenever assignedCase was
   // set, making those extra cases unreachable until the open one was done.
-  const PRIMARY_TABS = [
-    ["home", assignedCase ? "My Cases" : "Get Case"],
-    ...(assignedCase ? [["cockpit", "★ Case Review"]] : []),
-    ["search", "Search"],
-    ["my_stats", "My Stats"],
-    ["p2p", "P2P"],
-    ["appeals", "Appeals"],
+  // Single tab config — previously this was two separate arrays (the
+  // primary row below, and the Tools dropdown's own inline array further
+  // down) that had to be kept in sync by hand with each other and with the
+  // revView === "..." render block further below. Now there is one list of
+  // every reachable revView key; the render block still switches on it
+  // (each view's JSX differs too much, and "home" in particular is a large
+  // inline block, to usefully collapse into this same array), but adding or
+  // renaming a tab is down to two places instead of three.
+  const NAV_ITEMS = [
+    { key: "home", label: assignedCase ? "My Cases" : "Get Case", group: "primary" },
+    ...(assignedCase ? [{ key: "cockpit", label: "★ Case Review", group: "primary" }] : []),
+    { key: "search", label: "Search", group: "primary" },
+    { key: "my_stats", label: "My Stats", group: "primary" },
+    { key: "p2p", label: "P2P", group: "primary" },
+    { key: "appeals", label: "Appeals", group: "primary" },
+    { key: "ur_form", label: "UR Review Form", group: "tools" },
+    { key: "criteria", label: "Criteria Library", group: "tools" },
+    { key: "state_rules", label: "State Rules", group: "tools" },
   ];
 
   const NavBar = () => (
     <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 28px", display: "flex", alignItems: "center", gap: 0, flexShrink: 0, position: "relative" }}>
-      {PRIMARY_TABS.map(([v, label]) => {
+      {NAV_ITEMS.filter(i => i.group === "primary").map(({ key: v, label }) => {
         const active = revView === v;
         const isCockpit = v === "cockpit";
         return (
@@ -3053,7 +3064,7 @@ function ReviewerShell({ user, token, onLogout }) {
         {toolsOpen && (
           <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 200, minWidth: 180, overflow: "hidden" }}
             onMouseLeave={() => setToolsOpen(false)}>
-            {[["ur_form", "UR Review Form"], ["criteria", "Criteria Library"], ["state_rules", "State Rules"]].map(([v, label]) => (
+            {NAV_ITEMS.filter(i => i.group === "tools").map(({ key: v, label }) => (
               <button key={v} onClick={() => { setRevView(v); setToolsOpen(false); }} style={{
                 display: "block", width: "100%", textAlign: "left", padding: "11px 18px",
                 fontSize: 13, color: "#374151", background: revView === v ? "#f1f5f9" : "#fff",
