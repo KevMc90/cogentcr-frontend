@@ -2722,7 +2722,40 @@ function ReviewerShell({ user, token, onLogout }) {
   const [exitLoading, setExitLoading]       = useState(false);
   const [exitError, setExitError]           = useState("");
   const [isAvailable, setIsAvailable]       = useState(true);
+  // Every case checked out to this reviewer server-side (under_review / on_hold),
+  // not just the one open in the cockpit. A refresh, a second Get Case, a master
+  // assignment or a Search claim can each leave extra cases assigned; this list
+  // is where the reviewer sees them and returns any number to the queue at once.
+  const [myCases, setMyCases]               = useState([]);
+  const [myCasesLoading, setMyCasesLoading] = useState(false);
+  const [myCasesError, setMyCasesError]     = useState("");
+  const [selectedIds, setSelectedIds]       = useState(() => new Set());
+  const [batchModal, setBatchModal]         = useState(false);
+  const [batchReason, setBatchReason]       = useState("");
+  const [batchLoading, setBatchLoading]     = useState(false);
+  const [batchError, setBatchError]         = useState("");
+  const [batchNotice, setBatchNotice]       = useState("");
+  const [resumeError, setResumeError]       = useState("");
   const DISC_COLOR = user.discipline === "OT" ? "#c2410c" : user.discipline === "ST" ? "#15803d" : "#1a3a5c";
+
+  const loadMyCases = async () => {
+    setMyCasesLoading(true); setMyCasesError(""); setResumeError("");
+    try {
+      const res = await axios.get(`${API_BASE}/v1/my-cases`, { headers: { Authorization: `Bearer ${token}` } });
+      const rows = res.data.cases || [];
+      setMyCases(rows);
+      // Drop selections for cases that are no longer ours.
+      setSelectedIds(prev => {
+        const live = new Set(rows.map(r => r.submission_id));
+        const next = new Set([...prev].filter(id => live.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
+    } catch (err) {
+      setMyCasesError(err.response?.data?.error || "Could not load your cases.");
+    } finally {
+      setMyCasesLoading(false);
+    }
+  };
 
   useEffect(() => {
     const h = { Authorization: `Bearer ${token}` };
@@ -2730,6 +2763,7 @@ function ReviewerShell({ user, token, onLogout }) {
     axios.get(`${API_BASE}/v1/my-availability`, { headers: h })
       .then(r => setIsAvailable(r.data.availability?.is_available !== false))
       .catch(() => {});
+    if (revView === "home") loadMyCases();
   }, [token, revView]); // eslint-disable-line
 
   const toggleAvailability = async () => {
@@ -2818,6 +2852,63 @@ function ReviewerShell({ user, token, onLogout }) {
     setExitModal(false);
     setExitReason("");
     setExitError("");
+    // A successful hold/release reached here with exitLoading still true and
+    // nothing ever reset it, so the next time the modal opened its button was
+    // already disabled and read "Saving..." — the "stuck on Saving" report.
+    setExitLoading(false);
+  };
+
+  // ── Batch return-to-queue from the My Cases list ──
+  const toggleSelected = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleSelectAll = () => setSelectedIds(prev =>
+    prev.size === myCases.length ? new Set() : new Set(myCases.map(r => r.submission_id))
+  );
+  const openBatchModal = () => {
+    if (selectedIds.size === 0) return;
+    setBatchReason(""); setBatchError(""); setBatchNotice(""); setBatchLoading(false); setBatchModal(true);
+  };
+  const closeBatchModal = () => { setBatchModal(false); setBatchReason(""); setBatchError(""); };
+
+  const handleBatchRelease = async () => {
+    if (!batchReason.trim()) { setBatchError("Please enter a reason."); return; }
+    const ids = [...selectedIds];
+    setBatchLoading(true); setBatchError("");
+    try {
+      const res = await axios.post(
+        `${API_BASE}/v1/my-cases/release`,
+        { submissionIds: ids, reason: batchReason.trim() },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const released = new Set(res.data.released || []);
+      const skipped  = res.data.skipped || [];
+      setMyCases(prev => prev.filter(r => !released.has(r.submission_id)));
+      setSelectedIds(new Set(skipped));
+      // If the case open in the cockpit was among those returned, it is no
+      // longer ours — close it out the same way a single release does.
+      if (assignedCase && released.has(assignedCase.caseId)) {
+        setAssignedCase(null);
+        setRevView("home");
+      }
+      const n = released.size;
+      setBatchNotice(
+        n === 0
+          ? "No cases were returned — they may have already been reassigned or completed."
+          : `Returned ${n} case${n === 1 ? "" : "s"} to the queue.` +
+            (skipped.length ? ` ${skipped.length} could not be returned and ${skipped.length === 1 ? "is" : "are"} still selected.` : "")
+      );
+      setBatchModal(false); setBatchReason("");
+      // Reflect the new queue depth in the stats tiles.
+      axios.get(`${API_BASE}/v1/queue-stats`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => setQueueStats(r.data)).catch(() => {});
+    } catch (err) {
+      setBatchError(err.response?.data?.error || "Failed to return cases to the queue.");
+    } finally {
+      setBatchLoading(false);
+    }
   };
 
   // ISSUE 4 FIX — a case opened from Search was never claimed server-side, so
@@ -2913,8 +3004,15 @@ function ReviewerShell({ user, token, onLogout }) {
     : null;
 
   // ── shared nav items ──
+  // "home" (My Cases / Get Case) stays reachable even with a case open: a
+  // master reassignment, a second Get Case after a refresh, or a Search
+  // claim can leave more cases checked out to this reviewer than the one in
+  // the cockpit, and "home" is the only place to see and batch-release them.
+  // Previously "cockpit" replaced "home" outright whenever assignedCase was
+  // set, making those extra cases unreachable until the open one was done.
   const PRIMARY_TABS = [
-    assignedCase ? ["cockpit", "★ Case Review"] : ["home", "Get Case"],
+    ["home", assignedCase ? "My Cases" : "Get Case"],
+    ...(assignedCase ? [["cockpit", "★ Case Review"]] : []),
     ["search", "Search"],
     ["my_stats", "My Stats"],
     ["p2p", "P2P"],
@@ -3070,6 +3168,53 @@ function ReviewerShell({ user, token, onLogout }) {
       <NavBar />
       <ExitModal />
 
+      {/* Batch return-to-queue modal (My Cases). Inline JSX rather than a nested
+          component so the textarea keeps focus across keystrokes. */}
+      {batchModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9000 }}>
+          <div style={{ background: "#fff", borderRadius: 14, padding: "28px 32px", width: 460, maxWidth: "calc(100vw - 32px)", boxSizing: "border-box", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#0d1b2a", fontFamily: "'Fraunces', Georgia, serif", marginBottom: 6 }}>
+              Return {selectedIds.size} Case{selectedIds.size === 1 ? "" : "s"} to Queue
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, fontFamily: "'Public Sans', sans-serif", lineHeight: 1.5 }}>
+              These cases will be returned to the queue immediately and routed to the next available reviewer by priority and submission age.
+            </div>
+            <div style={{ maxHeight: 132, overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: 8, marginBottom: 16, background: "#f8fafc" }}>
+              {myCases.filter(r => selectedIds.has(r.submission_id)).map(r => (
+                <div key={r.submission_id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "6px 12px", borderBottom: "1px solid #f1f5f9", fontSize: 12, fontFamily: "'Public Sans', sans-serif" }}>
+                  <span style={{ color: "#1e293b", fontWeight: 600 }}>{r.member_name || "—"}</span>
+                  <span style={{ color: "#9ca3af", fontFamily: "monospace" }}>{r.submission_id?.slice(0, 12)}…</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'Public Sans', sans-serif" }}>
+              Reason for return<span style={{ color: "#dc2626" }}> *</span>
+            </div>
+            <textarea
+              autoFocus
+              value={batchReason}
+              onChange={e => { setBatchReason(e.target.value); setBatchError(""); }}
+              placeholder="e.g. Ending shift — returning open cases to the general queue..."
+              rows={3}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #d1d5db", fontSize: 13, fontFamily: "'Public Sans', sans-serif", resize: "vertical", outline: "none", boxSizing: "border-box", lineHeight: 1.5 }}
+            />
+            {batchError && <div style={{ marginTop: 6, fontSize: 12, color: "#dc2626", fontFamily: "'Public Sans', sans-serif" }}>{batchError}</div>}
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button
+                onClick={handleBatchRelease}
+                disabled={batchLoading}
+                style={{ flex: 1, padding: "11px 0", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontSize: 13, fontWeight: 700, cursor: batchLoading ? "not-allowed" : "pointer", fontFamily: "'Public Sans', sans-serif", opacity: batchLoading ? 0.6 : 1 }}
+              >{batchLoading ? "Returning..." : "Return to Queue"}</button>
+              <button
+                onClick={closeBatchModal}
+                disabled={batchLoading}
+                style={{ padding: "11px 20px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#fff", color: "#374151", fontSize: 13, cursor: "pointer", fontFamily: "'Public Sans', sans-serif" }}
+              >Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Cockpit — kept mounted while case is active; hidden when on another tab */}
       {assignedCase && (
         <div style={{ display: cockpitVisible ? "flex" : "none", flex: 1, flexDirection: "column", overflow: "hidden" }}>
@@ -3097,7 +3242,8 @@ function ReviewerShell({ user, token, onLogout }) {
 
         {/* Home / Get Case */}
         {revView === "home" && (
-          <div style={{ maxWidth: 520, margin: "60px auto", padding: "0 24px", width: "100%" }}>
+          <div style={{ maxWidth: 760, margin: "60px auto", padding: "0 24px", width: "100%", boxSizing: "border-box" }}>
+            <div style={{ maxWidth: 520, margin: "0 auto 28px" }}>
             <div style={{ background: "#fff", borderRadius: 20, padding: "52px 40px 44px", boxShadow: "0 4px 24px rgba(26,58,92,0.13)", border: "1px solid #dde4ef", textAlign: "center", marginBottom: 24 }}>
               <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6b7280", marginBottom: 12 }}>{discLabel} Reviewer</div>
               <div style={{ fontSize: 32, fontWeight: 800, color: "#1a3a5c", fontFamily: "'Fraunces', Georgia, serif", lineHeight: 1.1, marginBottom: 10 }}>Ready to review?</div>
@@ -3117,6 +3263,112 @@ function ReviewerShell({ user, token, onLogout }) {
                   <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 5 }}>{s.label}</div>
                 </div>
               ))}
+            </div>
+            </div>
+
+            {/* My Cases — every case checked out to this reviewer, with multi-select return to queue */}
+            <div style={{ background: "#fff", borderRadius: 12, boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0", overflow: "hidden" }}>
+              <div style={{ padding: "14px 20px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1a3a5c", fontFamily: "'Fraunces', Georgia, serif" }}>Your active cases</span>
+                  <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8, fontFamily: "'Public Sans', sans-serif" }}>
+                    {myCasesLoading ? "Loading…" : `${myCases.length} assigned to you`}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button onClick={loadMyCases} disabled={myCasesLoading} style={{ padding: "5px 10px", borderRadius: 6, background: "#fff", color: "#374151", fontSize: 11, fontWeight: 600, border: "1px solid #e2e8f0", cursor: myCasesLoading ? "not-allowed" : "pointer", fontFamily: "'Public Sans', sans-serif" }}>
+                    Refresh
+                  </button>
+                  <button
+                    onClick={openBatchModal}
+                    disabled={selectedIds.size === 0}
+                    style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid #fca5a5", background: selectedIds.size === 0 ? "#fff" : "#dc2626", color: selectedIds.size === 0 ? "#fca5a5" : "#fff", fontSize: 11, fontWeight: 700, cursor: selectedIds.size === 0 ? "not-allowed" : "pointer", fontFamily: "'Public Sans', sans-serif", whiteSpace: "nowrap" }}
+                  >
+                    Return {selectedIds.size > 0 ? selectedIds.size : ""} to Queue
+                  </button>
+                </div>
+              </div>
+              {batchNotice && (
+                <div style={{ padding: "8px 20px", fontSize: 12, color: "#15803d", background: "#f0fdf4", borderBottom: "1px solid #dcfce7", fontFamily: "'Public Sans', sans-serif", display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <span>{batchNotice}</span>
+                  <button onClick={() => setBatchNotice("")} style={{ background: "none", border: "none", color: "#15803d", cursor: "pointer", fontSize: 12, padding: 0 }}>Dismiss</button>
+                </div>
+              )}
+              {myCasesError && (
+                <div style={{ padding: "8px 20px", fontSize: 12, color: "#dc2626", background: "#fef2f2", borderBottom: "1px solid #fee2e2", fontFamily: "'Public Sans', sans-serif" }}>{myCasesError}</div>
+              )}
+              {resumeError && (
+                <div style={{ padding: "8px 20px", fontSize: 12, color: "#dc2626", background: "#fef2f2", borderBottom: "1px solid #fee2e2", fontFamily: "'Public Sans', sans-serif" }}>{resumeError}</div>
+              )}
+              {myCases.length === 0 ? (
+                <div style={{ padding: "28px 20px", color: "#9ca3af", fontSize: 13, textAlign: "center", fontFamily: "'Public Sans', sans-serif" }}>
+                  {myCasesLoading ? "Loading your cases…" : "No cases are checked out to you. Get Case will pull the next one from the queue."}
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 110px 60px 110px 110px 84px", gap: 0, padding: "8px 20px", borderBottom: "1px solid #f1f5f9", background: "#f8fafc", alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all cases"
+                      checked={myCases.length > 0 && selectedIds.size === myCases.length}
+                      onChange={toggleSelectAll}
+                      style={{ margin: 0, cursor: "pointer" }}
+                    />
+                    {["Member", "Case ID", "Disc.", "Status", "Assigned", ""].map(h => (
+                      <span key={h} style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "'DM Sans', sans-serif" }}>{h}</span>
+                    ))}
+                  </div>
+                  {myCases.map(r => {
+                    const isOpen  = assignedCase?.caseId === r.submission_id;
+                    const onHold  = r.status === "on_hold";
+                    const dc = r.discipline === "OT" ? { bg: "#fff7ed", text: "#c2410c" } : r.discipline === "ST" ? { bg: "#f0fdf4", text: "#15803d" } : { bg: "#eff6ff", text: "#1a3a5c" };
+                    const pr = r.review_priority;
+                    return (
+                      <div key={r.submission_id} style={{ display: "grid", gridTemplateColumns: "28px 1fr 110px 60px 110px 110px 84px", gap: 0, padding: "10px 20px", borderBottom: "1px solid #f1f5f9", alignItems: "center", background: selectedIds.has(r.submission_id) ? "#fffbeb" : "transparent" }}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${r.member_name || r.submission_id}`}
+                          checked={selectedIds.has(r.submission_id)}
+                          onChange={() => toggleSelected(r.submission_id)}
+                          style={{ margin: 0, cursor: "pointer" }}
+                        />
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", fontFamily: "'Public Sans', sans-serif" }}>
+                            {r.member_name || "—"}
+                            {pr && pr !== "standard" && (
+                              <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: pr === "urgent" ? "#fee2e2" : "#fef3c7", color: pr === "urgent" ? "#991b1b" : "#92400e", textTransform: "uppercase", letterSpacing: "0.06em", verticalAlign: "middle" }}>{pr}</span>
+                            )}
+                            {isOpen && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#e0f2fe", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.06em", verticalAlign: "middle" }}>Open</span>}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 1, fontFamily: "'DM Sans', monospace" }}>{r.member_id || "—"}</div>
+                        </div>
+                        <span style={{ fontSize: 11, color: "#374151", fontFamily: "monospace" }}>{r.submission_id?.slice(0, 12)}…</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6, background: dc.bg, color: dc.text, width: "fit-content", fontFamily: "'DM Sans', sans-serif" }}>{r.discipline || "—"}</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: onHold ? "#f3f4f6" : "#fef3c7", color: onHold ? "#374151" : "#92400e", width: "fit-content", fontFamily: "'DM Sans', sans-serif" }}>
+                          {onHold ? "On hold" : "Under review"}
+                        </span>
+                        <span style={{ fontSize: 11, color: "#6b7280", fontFamily: "'DM Sans', sans-serif" }}>{r.assigned_at ? new Date(r.assigned_at).toLocaleDateString() : "—"}</span>
+                        <button
+                          onClick={async () => {
+                            // Already the case loaded in the cockpit — just switch
+                            // tabs. No need to re-POST /assign or re-fetch it, and
+                            // doing so could show an error for a case that was
+                            // actually fine (a transient network blip on the
+                            // unnecessary re-fetch).
+                            if (isOpen) { setRevView("cockpit"); return; }
+                            setResumeError("");
+                            try { await handleOpenSearchCase(r); }
+                            catch (e) { setResumeError(e.response?.data?.error || e.message || "Failed to open case."); }
+                          }}
+                          style={{ padding: "5px 12px", borderRadius: 6, background: isOpen ? "#fff" : "#1a3a5c", color: isOpen ? "#1a3a5c" : "#fff", fontSize: 11, fontWeight: 700, border: isOpen ? "1px solid #1a3a5c" : "none", cursor: "pointer", fontFamily: "'Public Sans', sans-serif", whiteSpace: "nowrap" }}
+                        >
+                          {isOpen ? "Continue" : "Resume"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -6822,7 +7074,7 @@ function AdminConsole({ token }) {
 
   const openNew = () => {
     setEditing("new");
-    setForm({ planId: "", planName: "", autoApproveThreshold: 18, brandColor: "#1a3a5c", logoUrl: "", contactEmail: "" });
+    setForm({ planId: "", planName: "", payer: "", autoApproveThreshold: 18, brandColor: "#1a3a5c", logoUrl: "", contactEmail: "" });
   };
 
   const handleSave = async () => {
@@ -6830,7 +7082,7 @@ function AdminConsole({ token }) {
     try {
       if (editing === "new") {
         await axios.post(`${API_BASE}/v1/admin/plans`, {
-          planId: form.planId, planName: form.planName,
+          planId: form.planId, planName: form.planName, payer: form.payer,
           autoApproveThreshold: parseInt(form.autoApproveThreshold, 10),
           brandColor: form.brandColor, logoUrl: form.logoUrl, contactEmail: form.contactEmail,
         }, { headers: { Authorization: `Bearer ${token}` } });
@@ -6899,6 +7151,7 @@ function AdminConsole({ token }) {
             {[
               editing === "new" && { key: "planId", label: "Plan ID *", placeholder: "e.g. UHC-GOLD", type: "text" },
               { key: "planName", label: "Plan Name *", placeholder: "e.g. United Health Gold", type: "text" },
+              editing === "new" && { key: "payer", label: "Payer *", placeholder: "e.g. UnitedHealthcare", type: "text" },
               { key: "autoApproveThreshold", label: "Auto-Approve Threshold (visits)", placeholder: "18", type: "number" },
               { key: "brandColor", label: "Brand Color (hex)", placeholder: "#005a8b", type: "text" },
               { key: "logoUrl", label: "Logo URL (optional)", placeholder: "https://...", type: "text" },
