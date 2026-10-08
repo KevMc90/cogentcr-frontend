@@ -1836,14 +1836,19 @@ function RecommendationZone({ kase, engineState, selectedPlan, bare }) {
             parsed or wasn't approved (e.g. Pend, transition visits). */}
         {(() => {
           const ext = kase.contract.extraction || {};
-          const { freqPerWeek: reqFreq, durationWeeks: reqWeeks } =
+          const { freqPerWeek: reqFreq0, durationWeeks: reqWeeks0 } =
             parseRequestedFreqWeeks(ext.requestedFrequency);
+          const submittedVisits = kase.requestedVisits ?? ext.requestedVisits;
+          // Show the document's frequency only when it adds up to the submitted count.
+          const freqAgrees = reqFreq0 != null && reqWeeks0 != null && reqFreq0 * reqWeeks0 === Number(submittedVisits);
+          const reqFreq = freqAgrees ? reqFreq0 : null;
+          const reqWeeks = freqAgrees ? reqWeeks0 : null;
           return (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
               <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #f1f5f9", background: "#fafafa" }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontFamily: FONTS.body }}>Requested (provider)</div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#374151", fontFamily: FONTS.body }}>
-                  {formatVisitLine(ext.requestedVisits, reqFreq, reqWeeks)}
+                  {formatVisitLine(submittedVisits, reqFreq, reqWeeks)}
                 </div>
               </div>
               <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #f1f5f9", background: "#fafafa" }}>
@@ -2282,11 +2287,11 @@ function UNFNotePanel({ kase, onNoteChange }) {
       autoHpiData,
       clinicalSummary:   kase.contract.clinicalSummary,
       poc:               kase.contract.extraction?.poc,
-      requestedVisits:   kase.contract.extraction?.requestedVisits,
+      requestedVisits:   kase.requestedVisits ?? kase.contract.extraction?.requestedVisits,
       determinationLine: kase.contract.recommendation.rationale,
       approvedVisits:    kase.contract.recommendation.approvedVisits,
     });
-  }, [kase.contract, kase.providerNotes, isSubsequent, episodeOverride]);
+  }, [kase.contract, kase.providerNotes, kase.requestedVisits, isSubsequent, episodeOverride]);
 
   const [noteText, setNoteText] = useState(builtNote);
   useEffect(() => { if (onNoteChange) onNoteChange(kase.caseId, noteText); }, [kase.caseId, noteText]); // eslint-disable-line
@@ -3023,11 +3028,14 @@ function VisitsStrip({ kase }) {
   const lab = { fontSize: 11, color: "rgba(255,255,255,0.65)", fontFamily: FONTS.body };
   const num = { fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.body };
   const toDate = ep.state === "ok" ? ep.cumulative : null;
+  const docVisits = kase.contract?.extraction?.requestedVisits;
+  const docDiffers = requested != null && docVisits != null && Number(docVisits) !== Number(requested);
   const reqText = requested != null ? `${requested} ${Number(requested) === 1 ? "visit" : "visits"}` : "not stated";
   const dateText = ep.state === "loading" ? "…" : toDate != null ? `${toDate} ${toDate === 1 ? "visit" : "visits"}` : ep.state === "error" ? "could not load" : "none on file";
   return (
     <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center", gap: "2px 22px", textAlign: "center" }}>
       <span><span style={lab}>Requested by provider: </span><span style={num}>{reqText}</span></span>
+      {docDiffers && <span style={{ fontSize: 11, fontWeight: 600, color: "#fcd34d", fontFamily: FONTS.body }} title="The visit count entered on the request form differs from the count the clinical documents support">Plan of care states {docVisits}</span>}
       {isSubsequent && <span><span style={lab}>Approved to date: </span><span style={num}>{dateText}</span></span>}
     </div>
   );
@@ -3141,9 +3149,9 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
   const alignment = useMemo(
     () => analyzeNote(
       noteState.caseId === kase?.caseId ? noteState.text : "",
-      kase?.contract?.extraction?.requestedVisits
+      kase?.requestedVisits ?? kase?.contract?.extraction?.requestedVisits
     ),
-    [noteState, kase?.caseId, kase?.contract]
+    [noteState, kase?.caseId, kase?.contract, kase?.requestedVisits]
   );
 
   // Reset cursor only when a new live case arrives. Also resets the plan-
