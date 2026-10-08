@@ -1317,85 +1317,99 @@ function SubmitCaseView({ user, token, plans, onBack }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PRINT DECISION LETTER (client-side, no auth header needed)
 // ─────────────────────────────────────────────────────────────────────────────
-function printDecisionLetter(submission, decision) {
-  const isApproved = submission.status === "approved";
-  const isDenied   = submission.status === "denied";
-  const decLabel   = isApproved ? "APPROVED" : isDenied ? "DENIED" : "PENDED";
-  const decColor   = isApproved ? "#15803d"  : isDenied ? "#991b1b" : "#1d4ed8";
-  const decBg      = isApproved ? "#f0fdf4"  : isDenied ? "#fef2f2" : "#eff6ff";
-  const approvedVisits = decision?.approved_visits ?? null;
-  const rationale      = decision?.rationale       ?? "";
-  const decidedAt      = decision?.recorded_at ?? submission.updated_at ?? new Date().toISOString();
-  const decidedStr     = new Date(decidedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-  const diags = Array.isArray(submission.diagnosis_codes) ? submission.diagnosis_codes : [];
+// ────────────────────────────────────────────────────────────────────────
+// PROVIDER STATUS + DETERMINATION LETTER
+// The server (GET /v1/submissions/:id/letter) decides what a provider may see
+// and computes every deadline. This code only lays it out, on screen and in
+// the printable copy, from one description (letterSections) so the two cannot
+// drift apart.
+// ────────────────────────────────────────────────────────────────────────
+const fmtLetterDate = (d) => d ? new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "—";
 
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>CogentCR Decision Letter — ${submission.submission_id}</title>
+function letterSections(L) {
+  const tone = L.kind === "approved" ? { c: "#15803d", bg: "#f0fdf4", br: "#86efac" }
+    : L.kind === "partial" ? { c: "#92400e", bg: "#fffbeb", br: "#fcd34d" }
+    : { c: "#991b1b", bg: "#fef2f2", br: "#fca5a5" };
+  const facts = [
+    ["Member", L.member?.name || "—"],
+    ["Member ID", L.member?.id || "—"],
+    ["Date of birth", L.member?.dob || "—"],
+    ["Service", L.discipline || "—"],
+    ["Case ID", L.caseId],
+    ["Letter reference", L.letterRef],
+    ["Decision date", fmtLetterDate(L.decidedAt)],
+    ...(L.reviewedBy?.name ? [["Reviewed by", `${L.reviewedBy.name}${L.reviewedBy.title ? `, ${L.reviewedBy.title}` : ""}`]] : []),
+  ];
+  const visits = [
+    ["Requested", L.requestedVisits],
+    ["Approved", L.approvedVisits],
+    ...(L.kind !== "approved" ? [["Not approved", L.deniedVisits]] : []),
+  ].filter(([, v]) => v != null);
+  const next = [];
+  if (L.servicePeriod) {
+    next.push({ title: "Authorization period", text: `${fmtLetterDate(L.servicePeriod.from)} through ${fmtLetterDate(L.servicePeriod.through)}. ${L.servicePeriod.note}` });
+  }
+  if (L.rights) {
+    const a = L.rights.appeal;
+    next.push({
+      title: "Appeal this decision",
+      text: `You may file an appeal by ${fmtLetterDate(a.fileBy)} (${a.fileWithinDays} days from this letter). ${a.how}` +
+        (a.planDecisionDays ? ` A standard appeal is decided within ${a.planDecisionDays} days${a.planUrgentHours ? `; an urgent appeal within ${a.planUrgentHours} hours` : ""}${a.citation ? ` (${a.citation})` : ""}.` : ""),
+    });
+    next.push({
+      title: "Peer-to-peer discussion",
+      text: `You may ask to speak with the reviewing physician by ${fmtLetterDate(L.rights.peerToPeer.requestBy)}. ${L.rights.peerToPeer.how}`,
+    });
+    next.push({ title: "New or changed information", text: L.rights.newRequest });
+  } else if (L.kind === "approved") {
+    next.push({ title: "Need more visits?", text: "Submit a request for additional visits from this case before the authorization period ends, with updated progress documentation." });
+  }
+  const footer = L.template?.isDefault
+    ? "Standard CogentCR notice. A health plan's own required wording, deadlines and appeal addresses replace this template."
+    : "";
+  return { tone, facts, visits, next, footer };
+}
+
+function printProviderLetter(L) {
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  const s = letterSections(L);
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Determination letter ${esc(L.letterRef)}</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@700;800&family=Public+Sans:wght@400;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Public Sans', Arial, sans-serif; background: #f8fafc; padding: 32px; color: #1e293b; }
-  .page { max-width: 680px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 16px rgba(0,0,0,0.1); }
-  .header { background: #1a3a5c; padding: 20px 28px; display: flex; align-items: center; justify-content: space-between; }
-  .header-brand { font-family: 'Fraunces', Georgia, serif; font-size: 22px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
-  .header-sub { font-size: 11px; color: rgba(255,255,255,0.6); margin-top: 2px; }
+  .page { max-width: 700px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 16px rgba(0,0,0,0.1); }
+  .header { background: #1a3a5c; padding: 20px 28px; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-family: Georgia, serif; font-size: 22px; font-weight: 800; }
+  .sub { font-size: 11px; color: rgba(255,255,255,0.65); margin-top: 2px; }
   .body { padding: 28px 32px; }
-  .det-badge { display: inline-block; padding: 8px 18px; border-radius: 8px; background: ${decBg}; border: 1.5px solid ${decColor}; color: ${decColor}; font-size: 14px; font-weight: 800; letter-spacing: 0.05em; margin-bottom: 22px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 22px; }
-  .field-label { font-size: 9px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.1em; }
-  .field-value { font-size: 13px; color: #1e293b; font-weight: 600; margin-top: 1px; }
-  .visits-box { background: ${decBg}; border: 1px solid ${decColor}; border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; }
-  .visits-label { font-size: 9px; font-weight: 700; color: ${decColor}; text-transform: uppercase; letter-spacing: 0.1em; }
-  .visits-num { font-family: 'Fraunces', Georgia, serif; font-size: 36px; font-weight: 800; color: ${decColor}; line-height: 1; margin-top: 2px; }
-  .rationale { margin-bottom: 18px; }
-  .rationale-label { font-size: 9px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px; }
-  .rationale-text { font-size: 13px; line-height: 1.7; color: #374151; }
-  .footer-rule { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0 14px; }
-  .footer-text { font-size: 10px; color: #9ca3af; line-height: 1.6; }
-  .diag-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-  .diag-chip { padding: 2px 8px; background: #eff6ff; color: #1a3a5c; font-size: 11px; font-family: monospace; font-weight: 600; border-radius: 4px; }
-  @media print { body { background: #fff; padding: 0; } .page { box-shadow: none; border-radius: 0; } }
-</style>
-</head><body>
-<div class="page">
-  <div class="header">
-    <div>
-      <div class="header-brand">CogentCR</div>
-      <div class="header-sub">Utilization Management Decision Letter</div>
-    </div>
-    <div style="font-size:11px;color:rgba(255,255,255,0.5);text-align:right;">Generated ${new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})}</div>
-  </div>
-  <div class="body">
-    <div class="det-badge">${decLabel}</div>
-    <div class="grid">
-      <div><div class="field-label">Member Name</div><div class="field-value">${submission.member_name || "—"}</div></div>
-      <div><div class="field-label">Member ID</div><div class="field-value">${submission.member_id || "—"}</div></div>
-      <div><div class="field-label">Date of Birth</div><div class="field-value">${submission.dob || "—"}</div></div>
-      <div><div class="field-label">Discipline</div><div class="field-value">${submission.discipline || "PT"}</div></div>
-      <div><div class="field-label">Case ID</div><div class="field-value" style="font-family:monospace">${submission.submission_id}</div></div>
-      <div><div class="field-label">Decision Date</div><div class="field-value">${decidedStr}</div></div>
-    </div>
-    ${diags.length > 0 ? `<div style="margin-bottom:18px"><div class="field-label">Diagnosis Codes</div><div class="diag-chips">${diags.map(c => `<span class="diag-chip">${c}</span>`).join("")}</div></div>` : ""}
-    ${isApproved && approvedVisits != null ? `<div class="visits-box"><div class="visits-label">Authorized Visits</div><div class="visits-num">${approvedVisits} <span style="font-size:16px;font-weight:600">visits</span></div></div>` : ""}
-    ${rationale ? `<div class="rationale"><div class="rationale-label">Clinical Rationale</div><div class="rationale-text">${rationale}</div></div>` : ""}
-    <hr class="footer-rule">
-    <div class="footer-text">
-      ${isApproved
-        ? "This authorization is valid for the services and dates specified above. Contact CogentCR if clinical circumstances change materially prior to initiation of services."
-        : isDenied
-        ? "This determination is subject to appeal within 60 calendar days of receipt. To initiate an appeal, contact your CogentCR case coordinator. This determination was made in accordance with established clinical criteria and the member's benefit plan."
-        : "Additional clinical documentation has been requested. Please respond within 5 business days to avoid automatic case closure. Contact your case coordinator with questions."}
-    </div>
-  </div>
-</div>
-<script>setTimeout(() => window.print(), 400);<\/script>
-</body></html>`;
-
+  .badge { display: inline-block; padding: 8px 18px; border-radius: 8px; background: ${s.tone.bg}; border: 1.5px solid ${s.tone.c}; color: ${s.tone.c}; font-size: 14px; font-weight: 800; letter-spacing: .05em; margin-bottom: 18px; text-transform: uppercase; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 20px; }
+  .k { font-size: 9px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .1em; }
+  .v { font-size: 13px; font-weight: 600; margin-top: 1px; overflow-wrap: anywhere; }
+  .visits { display: flex; gap: 12px; margin-bottom: 20px; }
+  .visit { flex: 1; border: 1px solid ${s.tone.br}; background: ${s.tone.bg}; border-radius: 8px; padding: 10px 14px; }
+  .visit b { display: block; font-family: Georgia, serif; font-size: 30px; color: ${s.tone.c}; line-height: 1.1; }
+  h3 { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 5px; }
+  p { font-size: 13px; line-height: 1.7; color: #374151; }
+  .blk { margin-bottom: 16px; }
+  hr { border: none; border-top: 1px solid #e2e8f0; margin: 18px 0 12px; }
+  .foot { font-size: 10px; color: #6b7280; line-height: 1.6; }
+  @media print { body { background: #fff; padding: 0; } .page { box-shadow: none; } }
+</style></head><body><div class="page">
+<div class="header"><div><div class="brand">CogentCR</div><div class="sub">Utilization Management Determination</div></div><div class="sub">Issued ${esc(fmtLetterDate(L.decidedAt))}</div></div>
+<div class="body">
+  <div class="badge">${esc(L.determination)}</div>
+  <div class="grid">${s.facts.map(([k, v]) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("")}</div>
+  ${L.diagnosisCodes?.length ? `<div class="blk"><h3>Diagnosis codes</h3><p>${esc(L.diagnosisCodes.join(", "))}</p></div>` : ""}
+  ${s.visits.length ? `<div class="visits">${s.visits.map(([k, v]) => `<div class="visit"><span class="k">${esc(k)}</span><b>${esc(v)}</b></div>`).join("")}</div>` : ""}
+  <div class="blk"><h3>Clinical rationale</h3><p>${L.rationale ? esc(L.rationale) : (L.rationaleMissing ? "A written rationale is not yet on file for this determination. Contact CogentCR to request it before filing an appeal." : "No additional rationale was recorded.")}</p></div>
+  ${s.next.map(n => `<div class="blk"><h3>${esc(n.title)}</h3><p>${esc(n.text)}</p></div>`).join("")}
+  <hr><div class="foot">${esc(s.footer)}</div>
+</div></div><script>setTimeout(function(){window.print()},400);<\/script></body></html>`;
   const win = window.open("", "_blank");
-  if (win) {
-    win.document.write(html);
-    win.document.close();
-  }
+  if (win) { win.document.write(html); win.document.close(); }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NOTIFICATION BELL
@@ -3931,91 +3945,96 @@ function StatusProgressBar({ status }) {
   );
 }
 
-function DecisionLetter({ submission, decision }) {
-  const isApproved   = submission.status === "approved";
-  const isDenied     = ["denied", "partial_denial"].includes(submission.status);
-  const isInfoReq    = submission.status === "info_requested";
-  if (!isApproved && !isDenied && !isInfoReq) return null;
+function ProviderLetter({ letter }) {
+  const F = "'Public Sans', sans-serif";
+  const label = { fontSize: 10, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: F };
+  if (!letter) return null;
 
-  const decColor = isApproved ? "#15803d" : isDenied ? "#991b1b" : "#b45309";
-  const decBg    = isApproved ? "#f0fdf4" : isDenied ? "#fef2f2" : "#fffbeb";
-  const decLabel = isApproved ? "APPROVED" : isDenied ? "DENIED" : "ADDITIONAL INFORMATION REQUESTED";
+  // Not decided yet: say where the request is, never anything about the outcome.
+  if (!letter.final) {
+    const info = letter.infoRequest;
+    const needsAction = letter.stage === "info_requested";
+    const c = needsAction ? { fg: "#92400e", bg: "#fffbeb", br: "#fcd34d" } : { fg: "#1d4ed8", bg: "#eff6ff", br: "#bfdbfe" };
+    return (
+      <div style={{ marginTop: 16, border: `1px solid ${c.br}`, background: c.bg, borderRadius: 10, padding: "14px 18px", fontFamily: F }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: c.fg }}>{letter.statusTitle}</div>
+        <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.6, marginTop: 4 }}>{letter.statusMessage}</div>
+        {info && (
+          <div style={{ marginTop: 10, background: "#fff", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px" }}>
+            <div style={label}>What we need</div>
+            <div style={{ fontSize: 13, color: "#1e293b", marginTop: 3, lineHeight: 1.6 }}>
+              {[info.reason, info.details].filter(Boolean).join(" — ") || "Additional clinical documentation."}
+            </div>
+            <div style={{ fontSize: 12, color: "#92400e", marginTop: 6, fontWeight: 600 }}>
+              Respond by {fmtLetterDate(info.respondBy)}. {info.respondByNote}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
-  const approvedVisits = decision?.approved_visits ?? null;
-  const rationale      = decision?.rationale       ?? null;
-  const decidedAt      = decision?.recorded_at     ?? submission.updated_at;
-
+  const s = letterSections(letter);
   return (
-    <div style={{ marginTop: 20, border: `1.5px solid ${decColor}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
-      {/* Letterhead */}
-      <div style={{ background: "#1a3a5c", padding: "14px 20px", display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 15, fontWeight: 800, color: "#fff", fontFamily: "'Fraunces', Georgia, serif" }}>CogentCR</span>
-        <span style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginLeft: 4 }}>|</span>
-        <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", fontFamily: "'Public Sans', sans-serif" }}>Utilization Management Decision</span>
+    <div style={{ marginTop: 20, border: `1.5px solid ${s.tone.c}`, borderRadius: 10, overflow: "hidden", background: "#fff", fontFamily: F }}>
+      <div style={{ background: "#1a3a5c", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 15, fontWeight: 800, color: "#fff", fontFamily: "'Fraunces', Georgia, serif" }}>CogentCR</span>
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>Utilization Management Determination</span>
+        </div>
+        <span style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{letter.letterRef}</span>
       </div>
 
       <div style={{ padding: "20px 24px" }}>
-        {/* Decision badge */}
-        <div style={{ display: "inline-block", padding: "6px 16px", borderRadius: 8, background: decBg, border: `1px solid ${decColor}`, color: decColor, fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", marginBottom: 16, fontFamily: "'Public Sans', sans-serif" }}>
-          {decLabel}
+        <div style={{ display: "inline-block", padding: "6px 16px", borderRadius: 8, background: s.tone.bg, border: `1px solid ${s.tone.c}`, color: s.tone.c, fontSize: 13, fontWeight: 800, letterSpacing: "0.05em", marginBottom: 16, textTransform: "uppercase" }}>
+          {letter.determination}
         </div>
 
-        {/* Member info */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 20px", marginBottom: 16 }}>
-          {[
-            ["Member",      submission.member_name || "—"],
-            ["Member ID",   submission.member_id   || "—"],
-            ["Date of Birth",submission.dob        || "—"],
-            ["Discipline",  submission.discipline  || "PT"],
-            ["Case ID",     submission.submission_id],
-            ["Decision Date", decidedAt ? new Date(decidedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "—"],
-          ].map(([k, v]) => (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "8px 20px", marginBottom: 16 }}>
+          {s.facts.map(([k, v]) => (
             <div key={k}>
-              <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>{k}</span>
-              <div style={{ fontSize: 13, color: "#1e293b", fontWeight: 500, fontFamily: "'Public Sans', sans-serif" }}>{v}</div>
+              <span style={label}>{k}</span>
+              <div style={{ fontSize: 13, color: "#1e293b", fontWeight: 500, overflowWrap: "anywhere" }}>{v}</div>
             </div>
           ))}
         </div>
 
-        {/* Approved visits */}
-        {isApproved && approvedVisits != null && (
-          <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "12px 16px", marginBottom: 14 }}>
-            <span style={{ fontSize: 11, color: "#15803d", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'DM Sans', sans-serif" }}>Authorized Visits</span>
-            <div style={{ fontSize: 28, fontWeight: 800, color: "#15803d", fontFamily: "'Fraunces', Georgia, serif", lineHeight: 1.1, marginTop: 2 }}>
-              {approvedVisits} <span style={{ fontSize: 14, fontWeight: 600 }}>visits</span>
-            </div>
+        {s.visits.length > 0 && (
+          <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+            {s.visits.map(([k, v]) => (
+              <div key={k} style={{ flex: "1 1 120px", background: s.tone.bg, border: `1px solid ${s.tone.br}`, borderRadius: 8, padding: "10px 14px" }}>
+                <span style={{ ...label, color: s.tone.c }}>{k} visits</span>
+                <div style={{ fontSize: 28, fontWeight: 800, color: s.tone.c, fontFamily: "'Fraunces', Georgia, serif", lineHeight: 1.1, marginTop: 2 }}>{v}</div>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Rationale — the formal, provider-facing explanation. The server no
-            longer substitutes internal reviewer notes when this is absent, so
-            an adverse determination with no rationale on file says so plainly
-            rather than rendering an empty section the provider can't act on. */}
         <div style={{ marginBottom: 14 }}>
-          <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em", fontFamily: "'DM Sans', sans-serif" }}>Clinical Rationale</span>
-          {rationale ? (
-            <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.65, marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>{rationale}</div>
+          <span style={label}>Clinical rationale</span>
+          {letter.rationale ? (
+            <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.65, marginTop: 4 }}>{letter.rationale}</div>
           ) : (
-            <div style={{ fontSize: 13, color: "#6b7280", fontStyle: "italic", lineHeight: 1.65, marginTop: 4, fontFamily: "'Public Sans', sans-serif" }}>
-              {isDenied
+            <div style={{ fontSize: 13, color: "#6b7280", fontStyle: "italic", lineHeight: 1.65, marginTop: 4 }}>
+              {letter.rationaleMissing
                 ? "A written rationale for this determination is not yet on file. Contact CogentCR to request it before filing an appeal."
                 : "No additional rationale was recorded for this determination."}
             </div>
           )}
         </div>
 
-        {/* Footer note + print */}
-        <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: 12, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ fontSize: 11, color: "#9ca3af", fontFamily: "'DM Sans', sans-serif", lineHeight: 1.5, flex: 1 }}>
-            {isApproved
-              ? "This authorization is valid for the services and dates specified. Contact CogentCR if clinical circumstances change."
-              : isDenied
-              ? "This determination is subject to appeal within 60 calendar days of receipt. Contact your case coordinator for appeal instructions."
-              : "Please upload the requested documentation and resubmit within 5 business days to avoid case closure."}
+        {s.next.map(n => (
+          <div key={n.title} style={{ marginBottom: 12, padding: "10px 14px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+            <span style={label}>{n.title}</span>
+            <div style={{ fontSize: 13, color: "#374151", lineHeight: 1.6, marginTop: 3 }}>{n.text}</div>
           </div>
+        ))}
+
+        <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: 12, marginTop: 6, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.5, flex: 1 }}>{s.footer}</div>
           <button
-            onClick={() => printDecisionLetter(submission, decision)}
-            style={{ flexShrink: 0, padding: "6px 14px", borderRadius: 7, background: "#1a3a5c", color: "#fff", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "'Public Sans', sans-serif", whiteSpace: "nowrap" }}
+            onClick={() => printProviderLetter(letter)}
+            style={{ flexShrink: 0, padding: "6px 14px", borderRadius: 7, background: "#1a3a5c", color: "#fff", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: F }}
           >
             Print / PDF
           </button>
@@ -5470,6 +5489,7 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed, onRequestMoreV
   const [loading, setLoading]         = useState(true);
   const [expanded, setExpanded]       = useState(null);
   const [decisions, setDecisions]     = useState({});
+  const [letters, setLetters]         = useState({});   // id -> status/determination letter payload
   const [details, setDetails]         = useState({});   // full submission from the detail fetch
   const [detailErrors, setDetailErrors] = useState({}); // id -> message, so a failed fetch is visible
   const [docsByCase, setDocsByCase]   = useState({});   // id -> [{name, signedUrl, ...}]
@@ -5521,6 +5541,7 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed, onRequestMoreV
     if (expanded === id) { setExpanded(null); return; }
     setExpanded(id);
     loadDocs(id);
+    loadLetter(id);
     if (decisions[id] === undefined && !detailErrors[id]) {
       try {
         const r = await axios.get(`${API_BASE}/v1/submissions/${id}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -5538,6 +5559,18 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed, onRequestMoreV
           [id]: err?.response?.data?.error || "Could not load the decision details for this case.",
         }));
       }
+    }
+  };
+
+  // Status + determination letter. Fetched on every open (not cached) so a
+  // case that was decided since the list loaded shows its current state.
+  const loadLetter = async (id) => {
+    try {
+      const r = await axios.get(`${API_BASE}/v1/submissions/${id}/letter`, { headers: { Authorization: `Bearer ${token}` } });
+      setLetters(prev => ({ ...prev, [id]: r.data.letter || null }));
+    } catch (err) {
+      console.error("[MyCases] letter fetch failed for", id, err?.response?.status, err?.message);
+      setLetters(prev => ({ ...prev, [id]: null }));
     }
   };
 
@@ -5821,7 +5854,7 @@ function MyCasesView({ token, deepLinkCaseId, onDeepLinkConsumed, onRequestMoreV
                     </div>
                   )}
                 </div>
-                <DecisionLetter submission={sub} decision={decisions[sub.submission_id]} />
+                <ProviderLetter letter={letters[sub.submission_id]} />
 
                 {/* Request Additional Visits — finalized cases only. An
                     undecided prior is not a baseline to continue from. */}
