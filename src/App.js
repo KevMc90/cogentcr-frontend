@@ -5,6 +5,7 @@ import Cockpit from "./components/Cockpit";
 import ReviewerScheduling from "./components/ReviewerScheduling";
 import { parseRequestedFreqWeeks, formatVisitLine } from "./utils/visitComparison";
 import { buildUNFNote } from "./utils/unfNote";
+import { submissionToCockpitCase } from "./utils/cockpitCase";
 
 const API_BASE =
   process.env.REACT_APP_API_BASE ||
@@ -8109,7 +8110,11 @@ function MDAppealsView({ token }) {
 }
 
 function MDShell({ user, token, onLogout }) {
-  const [mdTab, setMdTab]     = useState("md_queue"); // "md_queue" | "l2_appeals"
+  const [mdTab, setMdTab]     = useState("md_queue"); // "md_queue" | "adverse_review" | "l2_appeals"
+  const [adverse, setAdverse] = useState([]);
+  const [adverseLoading, setAdverseLoading] = useState(false);
+  const [adverseError, setAdverseError] = useState(null);
+  const [cockpitCase, setCockpitCase] = useState(null);
   const [queue, setQueue]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
@@ -8132,6 +8137,22 @@ function MDShell({ user, token, onLogout }) {
   };
 
   useEffect(() => { fetchQueue(); }, []); // eslint-disable-line
+
+
+  const fetchAdverse = () => {
+    setAdverseLoading(true);
+    setAdverseError(null);
+    fetch(`${API_BASE}/v1/md-adverse-queue`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) throw new Error(d.error || "Could not load the adverse-review queue.");
+        setAdverse(d.cases || []);
+        setAdverseLoading(false);
+      })
+      .catch(e => { setAdverseError(e.message); setAdverseLoading(false); });
+  };
+
+  useEffect(() => { if (mdTab === "adverse_review") fetchAdverse(); }, [mdTab]); // eslint-disable-line
 
   const handleSubmit = () => {
     if (!selected || !action) return;
@@ -8167,6 +8188,21 @@ function MDShell({ user, token, onLogout }) {
       .catch(() => { setSubmitting(false); setToast("Network error."); setTimeout(() => setToast(null), 5000); });
   };
 
+  const closeCockpit = () => { setCockpitCase(null); fetchAdverse(); };
+  if (cockpitCase) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: CREAM }}>
+        <div style={{ background: NAVY, color: "#fff", padding: "0 24px", height: 44, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 12, fontWeight: 700 }}>Adverse review — {cockpitCase.memberName}</span>
+          <button onClick={closeCockpit} style={{ fontSize: 11, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "4px 12px", cursor: "pointer" }}>← Back to Adverse Review</button>
+        </div>
+        <div style={{ flex: 1, overflow: "hidden" }}>
+          <Cockpit user={user} liveCase={cockpitCase} hideQueueNav={true} onCaseDone={closeCockpit} onBack={closeCockpit} />
+        </div>
+      </div>
+    );
+  }
+
   const tatColor = (s) => s === "breached" ? "#fca5a5" : s === "at_risk" ? "#fcd34d" : "#86efac";
   const tatText  = (s) => s === "breached" ? "#7f1d1d" : s === "at_risk" ? "#78350f" : "#14532d";
 
@@ -8186,7 +8222,7 @@ function MDShell({ user, token, onLogout }) {
 
       {/* MD Tab bar */}
       <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 28px", display: "flex", gap: 0 }}>
-        {[["md_queue","Co-Sign Queue"], ["l2_appeals","L2 Appeals"]].map(([v, label]) => (
+        {[["md_queue","Co-Sign Queue"], ["adverse_review","Adverse Review"], ["l2_appeals","L2 Appeals"]].map(([v, label]) => (
           <button key={v} onClick={() => setMdTab(v)} style={{
             padding: "11px 20px", fontSize: 13, fontWeight: mdTab === v ? 700 : 500,
             color: mdTab === v ? NAVY : "#6b7280", background: "none", border: "none",
@@ -8201,6 +8237,27 @@ function MDShell({ user, token, onLogout }) {
       )}
 
       {mdTab === "l2_appeals" && <MDAppealsView token={token} />}
+      {mdTab === "adverse_review" && (
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: 32 }}>
+          <div style={{ fontFamily: "'Fraunces', serif", fontSize: 18, fontWeight: 700, color: NAVY }}>Adverse Review</div>
+          <div style={{ fontSize: 12, color: "#64748b", margin: "2px 0 16px" }}>
+            Cases where the pack's recommendation is short of a full approval. The recommendation is advisory; you decide.
+          </div>
+          {adverseLoading ? <div style={{ color: "#94a3b8", fontSize: 13 }}>Loading...</div>
+            : adverseError ? <div style={{ color: "#b91c1c", fontSize: 13 }}>{adverseError}</div>
+            : adverse.length === 0 ? <div style={{ color: "#475569", fontSize: 13 }}>No open adverse-review cases.</div>
+            : adverse.map(c => (
+              <div key={c.submission_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: NAVY }}>{c.member_name || "Unknown Patient"}</div>
+                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{c.discipline || "—"} · {c.plan_id || "—"} · pack {c.pack_id} {c.pack_version} · {c.requested_visits || 0} visits requested</div>
+                </div>
+                <button onClick={() => setCockpitCase(submissionToCockpitCase(c, user.discipline || "PT"))}
+                  style={{ padding: "6px 14px", borderRadius: 6, background: NAVY, color: "#fff", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" }}>Open</button>
+              </div>
+            ))}
+        </div>
+      )}
       {mdTab === "md_queue" && <div style={{ display: "flex", height: "calc(100vh - 110px)" }}>
         {/* Queue Panel */}
         <div style={{ width: 340, borderRight: "1px solid #e2e8f0", overflowY: "auto", background: "#fff" }}>
