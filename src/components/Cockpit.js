@@ -2999,13 +2999,13 @@ export function VisitsStrip({ kase }) {
     return () => { cancelled = true; };
   }, [isSubsequent, kase.isLive, kase.caseId, kase.memberId, kase.discipline]);
 
-  const lab = { fontSize: 11, color: "#64748b", fontFamily: FONTS.body };
-  const num = { fontSize: 13, fontWeight: 700, color: NAVY, fontFamily: FONTS.body };
+  const lab = { fontSize: 11, color: "rgba(255,255,255,0.65)", fontFamily: FONTS.body };
+  const num = { fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.body };
   const toDate = ep.state === "ok" ? ep.cumulative : null;
   const reqText = requested != null ? `${requested} ${Number(requested) === 1 ? "visit" : "visits"}` : "not stated";
   const dateText = ep.state === "loading" ? "…" : toDate != null ? `${toDate} ${toDate === 1 ? "visit" : "visits"}` : ep.state === "error" ? "could not load" : "none on file";
   return (
-    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center", gap: "2px 22px", padding: "6px 20px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", flexShrink: 0, textAlign: "center" }}>
+    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center", gap: "2px 22px", flex: "1 1 auto", minWidth: 0, textAlign: "center" }}>
       <span><span style={lab}>Requested by provider: </span><span style={num}>{reqText}</span></span>
       {isSubsequent && <span><span style={lab}>Approved to date: </span><span style={num}>{dateText}</span></span>}
       {isSubsequent && toDate != null && requested != null && (
@@ -3397,6 +3397,8 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
           <span style={{ fontSize: 16, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading, letterSpacing: "-0.02em" }}>CogentCR</span>
         </div>
 
+        <VisitsStrip kase={kase} />
+
         <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading }}>
             {kase.caseId}
@@ -3509,7 +3511,6 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <VisitsStrip kase={kase} />
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           {viewedCase && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 20px", background: "#fffbeb", borderBottom: "1px solid #fcd34d", fontFamily: FONTS.body }}>
