@@ -1576,11 +1576,11 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
 }
 
 // ── RECOMMENDATION ZONE ────────────────────────────────────────────────────────
-function RecommendationZone({ kase, engineState, selectedPlan }) {
+function RecommendationZone({ kase, engineState, selectedPlan, bare }) {
   if (!kase.contract) {
     return (
       <div>
-        <ZoneHeader title="Recommendation" />
+        {!bare && <ZoneHeader title="Recommendation" />}
         <div style={{ padding: "16px 20px" }}>
           <LoadingPulse label="Calling live engine..." />
         </div>
@@ -1598,7 +1598,7 @@ function RecommendationZone({ kase, engineState, selectedPlan }) {
 
   return (
     <div>
-      <ZoneHeader title="Recommendation" />
+      {!bare && <ZoneHeader title="Recommendation" />}
       <div style={{ padding: "16px 20px" }}>
 
         {kase.isLive && engineState === "offline" && (
@@ -1812,6 +1812,204 @@ function ActionBtn({ kbd, label, color, bg, border, onClick, disabled, compact }
   );
 }
 
+// ── DECISION TILE ──────────────────────────────────────────────────────────────
+// One of the six always-visible decisions. Same colors and shortcut keys as the
+// old stacked buttons; `active` marks the decision whose inline form is open and
+// `suggested` marks the one the engine's recommendation lines up with.
+function DecisionTile({ kbd, label, color, bg, border, onClick, active, suggested }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-pressed={!!active}
+      style={{
+        position: "relative", display: "flex", alignItems: "flex-start", gap: 8,
+        padding: "10px 10px", minHeight: 52, textAlign: "left", cursor: "pointer",
+        border: `${active ? 2 : 1.5}px solid ${active ? color : border}`,
+        borderRadius: 8, background: active || hover ? bg : "#fff",
+        transition: "all 0.12s", fontFamily: FONTS.body,
+      }}
+    >
+      {suggested && (
+        <span style={{
+          position: "absolute", top: -8, right: 8, fontSize: 9, fontWeight: 700,
+          letterSpacing: "0.05em", textTransform: "uppercase", color: NAVY_MID,
+          background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "0 7px",
+        }}>AI suggests</span>
+      )}
+      <span style={{
+        width: 20, height: 20, borderRadius: 5, background: border, color,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: 11, fontWeight: 800, flexShrink: 0,
+      }}>{kbd}</span>
+      <span style={{ fontSize: 12.5, fontWeight: 600, color, lineHeight: 1.25, paddingTop: 1 }}>{label}</span>
+    </button>
+  );
+}
+
+// ── AI SUGGESTION STRIP ────────────────────────────────────────────────────────
+// The recommendation, reduced to one line above the evidence. "Why" opens the
+// full recommendation (rationale, criteria, citations) in place; it is collapsed
+// again with the same control. It is a suggestion only: nothing here decides.
+function RecommendationStrip({ kase, engineState, selectedPlan }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setOpen(false); }, [kase.caseId]);
+
+  const offline = kase.isLive && engineState === "offline";
+  const rec = kase.contract?.recommendation;
+  const line = !kase.contract
+    ? "Engine is working on this case…"
+    : `${rec.determination}${rec.approvedVisits != null ? ` · ${rec.approvedVisits} visits` : ""}`;
+  const dc = rec ? detColors(rec.determination) : null;
+
+  return (
+    <div style={{ margin: "12px 20px 0", border: "1px solid #bfdbfe", background: "#f5f9ff", borderRadius: 9 }}>
+      <button
+        onClick={() => kase.contract && setOpen(o => !o)}
+        aria-expanded={open}
+        disabled={!kase.contract}
+        style={{
+          display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+          padding: "9px 12px", background: "none", border: "none",
+          cursor: kase.contract ? "pointer" : "default", fontFamily: FONTS.body,
+        }}
+      >
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: NAVY_MID, whiteSpace: "nowrap" }}>
+          AI suggestion
+        </span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: dc ? dc.text : "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {line}
+        </span>
+        {offline && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#991b1b", background: "#fee2e2", borderRadius: 4, padding: "1px 6px" }}>Engine offline</span>
+        )}
+        {kase.contract && (
+          <span style={{ fontSize: 12, fontWeight: 700, color: NAVY_MID, whiteSpace: "nowrap" }}>{open ? "Hide ▴" : "Why ▾"}</span>
+        )}
+      </button>
+      {open && kase.contract && (
+        <div style={{ borderTop: "1px solid #bfdbfe", background: "#fff", borderRadius: "0 0 9px 9px" }}>
+          <RecommendationZone kase={kase} engineState={engineState} selectedPlan={selectedPlan} bare />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── HEADER "MORE" MENU ─────────────────────────────────────────────────────────
+// Audit log, case timeline, submissions, plan and the shortcut list live here
+// so the header carries only what a reviewer needs on every case.
+function MoreMenu({ items, plans, selectedPlanId, onPlanChange, showShortcuts, canDecide }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const rowStyle = {
+    display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, width: "100%",
+    textAlign: "left", background: "none", border: "none", borderRadius: 6, padding: "7px 10px",
+    fontSize: 12.5, color: "#1e293b", fontFamily: FONTS.body, cursor: "pointer",
+  };
+  const keyStyle = { fontSize: 11, color: "#64748b", fontFamily: FONTS.body };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+        style={{
+          background: open ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)",
+          border: "1px solid rgba(255,255,255,0.25)", borderRadius: 5, padding: "3px 10px",
+          color: "#fff", fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
+        }}
+      >
+        More ▾
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", right: 0, top: "calc(100% + 8px)", zIndex: 40, minWidth: 250,
+          background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 6,
+          boxShadow: "0 10px 30px rgba(15,23,42,0.22)",
+        }}>
+          {items.map(it => (
+            <button key={it.label} style={rowStyle} onClick={() => { setOpen(false); it.onClick(); }}>
+              <span>{it.label}</span>
+              {it.hint && <span style={keyStyle}>{it.hint}</span>}
+            </button>
+          ))}
+          {plans.length > 0 && (
+            <>
+              <div style={{ borderTop: "1px solid #f1f5f9", margin: "6px 0" }} />
+              <label style={{ ...rowStyle, cursor: "default" }}>
+                <span>Plan</span>
+                <select
+                  value={selectedPlanId || ""}
+                  onChange={e => onPlanChange(e.target.value || null)}
+                  style={{ fontSize: 12, padding: "3px 6px", borderRadius: 5, border: "1px solid #cbd5e1", fontFamily: FONTS.body, maxWidth: 150 }}
+                >
+                  <option value="">Default Plan</option>
+                  {plans.map(p => <option key={p.plan_id} value={p.plan_id}>{p.plan_name}</option>)}
+                </select>
+              </label>
+            </>
+          )}
+          {showShortcuts && (
+            <>
+              <div style={{ borderTop: "1px solid #f1f5f9", margin: "6px 0" }} />
+              <div style={{ ...rowStyle, cursor: "default" }}><span>Previous / next case</span><span style={keyStyle}>J / K</span></div>
+              <div style={{ ...rowStyle, cursor: "default" }}><span>Open documents</span><span style={keyStyle}>V</span></div>
+              {canDecide && (
+                <div style={{ ...rowStyle, cursor: "default" }}><span>Choose a decision</span><span style={keyStyle}>A E P D N M</span></div>
+              )}
+              <div style={{ ...rowStyle, cursor: "default" }}><span>Close a panel</span><span style={keyStyle}>Esc</span></div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── MEMBER DOCUMENTS LIST ──────────────────────────────────────────────────────
+function DocumentsList({ kase, onOpen }) {
+  const docs = kase.documents || [];
+  return (
+    <div style={{ padding: "12px 18px 14px" }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>
+        Documents on this request ({docs.length})
+      </div>
+      {docs.length === 0 && (
+        <div style={{ fontSize: 12, color: "#94a3b8", fontStyle: "italic", fontFamily: FONTS.body }}>No documents listed</div>
+      )}
+      {docs.slice(0, 6).map((d, i) => (
+        <button key={i} onClick={onOpen} style={{
+          display: "flex", justifyContent: "space-between", gap: 8, width: "100%", textAlign: "left",
+          background: "none", border: "none", borderBottom: "1px solid #f1f5f9", padding: "7px 2px",
+          fontSize: 12.5, color: "#1e293b", cursor: "pointer", fontFamily: FONTS.body,
+        }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {typeof d === "string" ? d : d.name || d.type || "Unnamed document"}
+          </span>
+          {typeof d !== "string" && d.date && <span style={{ fontSize: 11, color: "#64748b", flexShrink: 0 }}>{fmtDateTime(d.date)}</span>}
+        </button>
+      ))}
+      <button onClick={onOpen} style={{
+        marginTop: 8, background: "none", border: "none", padding: 0, fontSize: 11.5, fontWeight: 600,
+        color: NAVY, cursor: "pointer", fontFamily: FONTS.body,
+      }}>
+        Open document viewer (V) ↗
+      </button>
+    </div>
+  );
+}
+
 // ── UNF NOTE PANEL ─────────────────────────────────────────────────────────────
 // Universal Note Format — primary content of the Determination (right) panel.
 // A reviewer reads the generated note, edits it in place if needed, copies it,
@@ -1996,6 +2194,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
   const decided    = decisions[kase.caseId];
   const rec        = kase.contract?.recommendation;
   const partialRef = useRef(null);
+  const [showQueue, setShowQueue] = useState(false);
 
   useEffect(() => {
     if (actionState === "partial_input" && partialRef.current) {
@@ -2067,11 +2266,6 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
           </div>
         )}
 
-        {/* UNF panel — primary content. Always visible once the engine has a
-            contract (before AND after a decision is recorded), since copying
-            the note into BBI isn't tied to which button the reviewer clicked. */}
-        {kase.contract && <UNFNotePanel kase={kase} onReleaseCase={onReleaseCase} />}
-
         {/* Stage 1 decision bar. Rebuilt from the "demo cleanup" state that had
             removed every action from this panel (see git history before this
             change) — the handlers/audit-event wiring underneath were already
@@ -2094,16 +2288,28 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
           </div>
         )}
 
-        {!decided && kase.contract && canDecide && actionState === "idle" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-            <ActionBtn kbd="A" label="Approve as recommended" color="#166534" bg="#f0fdf4" border="#86efac" onClick={() => onAction("approve")} />
-            <ActionBtn kbd="E" label="Edit and approve"       color={NAVY}    bg="#eff6ff" border="#93c5fd" onClick={() => onAction("edit_approve")} />
-            <ActionBtn kbd="P" label="Partial approval"       color="#92400e" bg="#fffbeb" border="#fcd34d" onClick={() => onAction("partial")} />
-            <ActionBtn kbd="D" label="Full denial"            color="#991b1b" bg="#fef2f2" border="#fca5a5" onClick={() => onAction("deny")} />
-            <ActionBtn kbd="N" label="Request information"    color="#1d4ed8" bg="#eff6ff" border="#93c5fd" onClick={() => onAction("pend")} />
-            <ActionBtn kbd="M" label="Send to physician review" color="#6b21a8" bg="#faf5ff" border="#d8b4fe" onClick={() => onAction("send_md")} />
-          </div>
-        )}
+        {!decided && kase.contract && canDecide && (() => {
+          const recDet = (rec?.determination || "").toLowerCase();
+          const suggestedKey = recDet.startsWith("approved") ? "approve" : recDet.startsWith("pend") ? "pend" : null;
+          const activeKey = { edit_approve: "edit_approve", partial_input: "partial", deny_confirm: "deny", deny_signoff: "deny", pend_input: "pend", send_md_confirm: "send_md" }[actionState] || null;
+          const tiles = [
+            ["approve",      "A", "Approve as recommended",   "#166534", "#f0fdf4", "#86efac"],
+            ["edit_approve", "E", "Edit and approve",         NAVY,      "#eff6ff", "#93c5fd"],
+            ["partial",      "P", "Partial approval",         "#92400e", "#fffbeb", "#fcd34d"],
+            ["deny",         "D", "Full denial",              "#991b1b", "#fef2f2", "#fca5a5"],
+            ["pend",         "N", "Request information",      "#1d4ed8", "#eff6ff", "#93c5fd"],
+            ["send_md",      "M", "Send to physician review", "#6b21a8", "#faf5ff", "#d8b4fe"],
+          ];
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, paddingTop: 4 }}>
+              {tiles.map(([key, kbd, label, color, bg, border]) => (
+                <DecisionTile key={key} kbd={kbd} label={label} color={color} bg={bg} border={border}
+                  active={activeKey === key} suggested={suggestedKey === key}
+                  onClick={() => onAction(key)} />
+              ))}
+            </div>
+          );
+        })()}
 
         {!decided && canDecide && actionState === "edit_approve" && (() => {
           const engineRationale = (rec?.rationale || "").trim();
@@ -2205,15 +2411,31 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
           </div>
         )}
 
+        {/* Review note — the editable text copied into BBI. Always visible once
+            the engine has a contract, before and after a decision is recorded. */}
+        {kase.contract && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>
+              Review note
+            </div>
+            <UNFNotePanel kase={kase} onReleaseCase={onReleaseCase} />
+          </div>
+        )}
+
         {!hideQueueNav && <div style={{ borderTop: "1px solid #f1f5f9" }} />}
 
-        {/* Queue list — hidden in single-case reviewer mode */}
+        {/* Queue list — collapsed by default; J/K and the header arrows move through it */}
         {!hideQueueNav && (
         <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8, fontFamily: FONTS.body }}>
-            Queue ({total}) · J prev · K next
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <button
+            onClick={() => setShowQueue(q => !q)}
+            aria-expanded={showQueue}
+            style={{ display: "flex", justifyContent: "space-between", width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: FONTS.body }}
+          >
+            <span>Queue ({total}) · J prev · K next</span>
+            <span>{showQueue ? "Hide ▴" : "Show ▾"}</span>
+          </button>
+          {showQueue && <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
             {queue.map((q, i) => {
               const isCurrent = i === cursor;
               const dec       = decisions[q.caseId];
@@ -2256,7 +2478,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
                 </div>
               );
             })}
-          </div>
+          </div>}
         </div>
         )}
 
@@ -2989,92 +3211,30 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: NAVY_DARK, fontFamily: FONTS.body, overflow: "hidden" }}>
 
-      {/* ── Top bar ── */}
+      {/* ── Top bar: only what a reviewer needs on every case. Audit log, case
+          timeline, submissions, plan and the shortcut list live under "More". ── */}
       <div style={{
-        height: 52, background: NAVY,
+        minHeight: 52, background: NAVY,
         borderBottom: "1px solid rgba(255,255,255,0.1)",
-        display: "flex", alignItems: "center",
-        padding: "0 20px", gap: 20, flexShrink: 0,
+        display: "flex", alignItems: "center", flexWrap: "wrap",
+        padding: "6px 20px", gap: "6px 16px", flexShrink: 0,
         boxShadow: "0 1px 8px rgba(0,0,0,0.3)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 16, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading, letterSpacing: "-0.02em" }}>CogentCR</span>
-          <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.2)" }} />
           <button onClick={onBack} style={{
             background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)",
             borderRadius: 5, padding: "3px 10px", color: "rgba(255,255,255,0.75)",
             fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
           }}>UR Form</button>
-          <div style={{
-            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)",
-            borderRadius: 5, padding: "3px 10px", color: "#fff",
-            fontSize: 11, fontFamily: FONTS.body, fontWeight: 700,
-          }}>Cockpit</div>
-          <button
-            onClick={() => { setShowAuditLog(s => !s); setShowDocs(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
-            style={{
-              background: showAuditLog ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 5, padding: "3px 10px", color: showAuditLog ? "#fff" : "rgba(255,255,255,0.65)",
-              fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
-            }}
-          >
-            Audit Log
-          </button>
-          <button
-            onClick={() => { setShowCaseTimeline(s => !s); setShowDocs(false); setShowSubmissions(false); setShowAuditLog(false); }}
-            style={{
-              background: showCaseTimeline ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 5, padding: "3px 10px", color: showCaseTimeline ? "#fff" : "rgba(255,255,255,0.65)",
-              fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
-            }}
-          >
-            Timeline
-          </button>
-          <button
-            onClick={() => { setShowSubmissions(s => !s); setShowDocs(false); setShowAuditLog(false); setShowCaseTimeline(false); if (!showSubmissions) fetchSubmissions(setSubmissions); }}
-            style={{
-              background: showSubmissions ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 5, padding: "3px 10px", color: showSubmissions ? "#fff" : "rgba(255,255,255,0.65)",
-              fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
-            }}
-          >
-            Submissions {submissions.length > 0 && `(${submissions.length})`}
-          </button>
-          {plans.length > 0 && (
-            <select
-              value={selectedPlanId || ""}
-              onChange={e => { userChangedPlanRef.current = true; setSelectedPlanId(e.target.value || null); }}
-              style={{
-                background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
-                borderRadius: 5, padding: "3px 8px", color: "#fff",
-                fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, outline: "none",
-              }}
-            >
-              <option value="" style={{ color: "#000" }}>Default Plan</option>
-              {plans.map(p => (
-                <option key={p.plan_id} value={p.plan_id} style={{ color: "#000" }}>
-                  {p.plan_name}
-                </option>
-              ))}
-            </select>
-          )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", fontFamily: FONTS.body }}>
-            {cursor + 1} / {queue.length}
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading }}>
             {kase.caseId}
           </span>
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.65)", fontFamily: FONTS.body }}>
-            {kase.memberName}
-          </span>
-          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: FONTS.body }}>
-            submitted {fmtTime(kase.submittedAt)}
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", fontFamily: FONTS.body }}>
+            {kase.memberName} · {disciplineLabel(kase.discipline, kase.reviewType)}
           </span>
           {kase.receivedAt && (() => {
             const priority     = kase.reviewPriority || "standard";
@@ -3088,58 +3248,69 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
             const tatTextColor = tatStatus === "breached" ? "#7f1d1d" : tatStatus === "at_risk" ? "#78350f" : "#14532d";
             return (
               <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: tatColor, color: tatTextColor, fontFamily: FONTS.body }}>
-                {tatStatus === "breached" ? "⚠ SLA BREACHED" : `${priority === "urgent" ? "⚡" : "⏱"} ${hoursLeft.toFixed(0)}h / ${hoursAllowed}h`}
+                {tatStatus === "breached" ? "⚠ SLA BREACHED" : `${priority === "urgent" ? "⚡" : "⏱"} ${hoursLeft.toFixed(0)}h left`}
               </span>
             );
           })()}
-          {kase.isLive && (
+          {kase.isLive && engineState !== "ok" && (
             <span style={{
               fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
-              background: engineState === "ok" ? "#dcfce7" : engineState === "offline" ? "#fee2e2" : "#fef3c7",
-              color:      engineState === "ok" ? "#166534" : engineState === "offline" ? "#991b1b" : "#92400e",
+              background: engineState === "offline" ? "#fee2e2" : "#fef3c7",
+              color:      engineState === "offline" ? "#991b1b" : "#92400e",
               fontFamily: FONTS.body, letterSpacing: "0.04em",
             }}>
-              {engineState === "loading" ? "Engine..." : engineState === "ok" ? "● Live" : "● Offline"}
+              {engineState === "offline" ? "● Engine offline" : "Engine…"}
             </span>
           )}
         </div>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 16, alignItems: "center" }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
           {decidedCount > 0 && (
             <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", fontFamily: FONTS.body }}>
               {decidedCount}/{queue.length} decided
             </span>
           )}
-          <KbdChip k="J" label="prev" />
-          <KbdChip k="K" label="next" />
-          <KbdChip k="V" label="docs" />
-          {canDecide && !decided && (
-            <>
-              <KbdChip k="A" label="approve" />
-              <KbdChip k="E" label="edit" />
-              <KbdChip k="P" label="partial" />
-              <KbdChip k="D" label="deny" />
-              <KbdChip k="N" label="info" />
-              <KbdChip k="M" label="to MD" />
-            </>
+          {!hideQueueNav && queue.length > 1 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontFamily: FONTS.body }}>{cursor + 1} of {queue.length}</span>
+              <button
+                onClick={() => cursor > 0 && handleNavigate(cursor - 1)} disabled={cursor === 0}
+                aria-label="Previous case (J)" title="Previous case (J)"
+                style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.28)", color: "#fff", borderRadius: 6, padding: "2px 9px", fontSize: 12, fontWeight: 600, cursor: cursor === 0 ? "default" : "pointer", opacity: cursor === 0 ? 0.4 : 1, fontFamily: FONTS.body }}
+              >‹ J</button>
+              <button
+                onClick={() => cursor < queue.length - 1 && handleNavigate(cursor + 1)} disabled={cursor >= queue.length - 1}
+                aria-label="Next case (K)" title="Next case (K)"
+                style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.28)", color: "#fff", borderRadius: 6, padding: "2px 9px", fontSize: 12, fontWeight: 600, cursor: cursor >= queue.length - 1 ? "default" : "pointer", opacity: cursor >= queue.length - 1 ? 0.4 : 1, fontFamily: FONTS.body }}
+              >K ›</button>
+            </div>
           )}
+          <MoreMenu
+            items={[
+              { label: "Documents", hint: "V", onClick: () => { setShowDocs(true); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); } },
+              { label: "Audit log", onClick: () => { setShowAuditLog(true); setShowDocs(false); setShowSubmissions(false); setShowCaseTimeline(false); } },
+              { label: "Case timeline", onClick: () => { setShowCaseTimeline(true); setShowDocs(false); setShowSubmissions(false); setShowAuditLog(false); } },
+              { label: `Submissions${submissions.length > 0 ? ` (${submissions.length})` : ""}`, onClick: () => { setShowSubmissions(true); setShowDocs(false); setShowAuditLog(false); setShowCaseTimeline(false); fetchSubmissions(setSubmissions); } },
+            ]}
+            plans={plans}
+            selectedPlanId={selectedPlanId}
+            onPlanChange={id => { userChangedPlanRef.current = true; setSelectedPlanId(id); }}
+            showShortcuts
+            canDecide={canDecide}
+          />
           {user && (
-            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: FONTS.body, borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: 14 }}>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: FONTS.body, borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: 12 }}>
               {user.name || user.email}
             </span>
           )}
         </div>
       </div>
 
-      {/* ── Three-zone body — Evidence 30 / Recommendation 36 / Determination 34 ── */}
+      {/* ── Three zones: member history | this request's evidence | decision.
+          The AI suggestion is a one-line strip above the evidence, not a panel. ── */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 1, overflow: "hidden" }}>
-        {/* Left column: Stage 1 member timeline (cross-service, every request
-            line for this member) stacked above today's current-case Evidence
-            panel — each with its own independent scroll, rather than one
-            long scrolling column, so a long cross-service history doesn't
-            push this case's own evidence out of easy reach. */}
-        <div style={{ width: "30%", minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ flex: "0 0 38%", minHeight: 0, borderBottom: "1px solid #e2e8f0" }}>
+        <div style={{ flex: "0 0 24%", minWidth: 250, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
             <MemberTimeline
               token={localStorage.getItem("cogentus_token") || ""}
               memberId={kase.memberId && kase.memberId !== "—" ? kase.memberId : null}
@@ -3147,18 +3318,22 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
               apiBase={API_BASE}
             />
           </div>
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
-            <EvidenceZone
+          <div style={{ flex: "0 0 auto", maxHeight: "40%", overflowY: "auto", borderTop: "1px solid #e2e8f0", background: "#fff" }}>
+            <DocumentsList
               kase={kase}
-              onToggleDocs={() => { setShowDocs(s => !s); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
-              showDocs={showDocs}
+              onOpen={() => { setShowDocs(true); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
             />
           </div>
         </div>
-        <div style={{ width: "36%", minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
-          <RecommendationZone kase={kase} engineState={engineState} selectedPlan={selectedPlan} />
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
+          <RecommendationStrip kase={kase} engineState={engineState} selectedPlan={selectedPlan} />
+          <EvidenceZone
+            kase={kase}
+            onToggleDocs={() => { setShowDocs(s => !s); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
+            showDocs={showDocs}
+          />
         </div>
-        <div style={{ flex: 1, minHeight: 0, height: "100%", background: "#fff", overflowY: "auto", overflowX: "hidden" }}>
+        <div style={{ flex: "0 0 31%", minWidth: 330, minHeight: 0, height: "100%", background: "#fff", overflowY: "auto", overflowX: "hidden" }}>
           <DeterminationZone
             kase={kase}
             queue={queue}
