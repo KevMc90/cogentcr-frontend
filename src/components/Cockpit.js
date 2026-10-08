@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMe
 import { parseRequestedFreqWeeks, formatVisitLine } from "../utils/visitComparison";
 import { buildUNFNote } from "../utils/unfNote";
 import MemberTimeline from "./MemberTimeline";
+import SourceHover from "./SourceHover";
 import { submissionToCockpitCase } from "../utils/cockpitCase";
 import { evidenceViewFor, evidenceSummaryLine } from "../utils/evidenceView";
 
@@ -1289,7 +1290,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
             <span style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>{disciplineLabel(kase.discipline, kase.reviewType)}</span>
           </div>
           <div style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: "monospace" }}>{ex.primaryDiagnosisCode}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: "monospace" }}><SourceHover provenance={ex.provenance} fieldKey="primaryDiagnosisCode">{ex.primaryDiagnosisCode}</SourceHover></span>
             <span style={{ fontSize: 12, color: "#374151", fontFamily: FONTS.body }}>{ex.primaryDiagnosis}</span>
           </div>
           <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center" }}>
@@ -1363,7 +1364,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4, fontFamily: FONTS.body }}>Pain</div>
             {ex.painCurrent
-              ? <div style={{ fontSize: 14, color: "#1e293b", fontFamily: FONTS.body }}>{ex.painCurrent}</div>
+              ? <div style={{ fontSize: 14, color: "#1e293b", fontFamily: FONTS.body }}><SourceHover provenance={ex.provenance} fieldKey="painCurrent">{ex.painCurrent}</SourceHover></div>
               : <NotDocumented what="pain rating" docNoun="evaluation" />}
           </div>
         )}
@@ -1395,7 +1396,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
                     <tr key={joint} style={{ borderBottom: "1px solid #f1f5f9" }}>
                       <td style={{ padding: "5px 6px", color: "#374151", fontFamily: FONTS.body }}>{joint}</td>
                       <td style={{ padding: "5px 6px", fontWeight: 600, color: pctDef && pctDef > 15 ? "#dc2626" : "#1e293b", fontFamily: FONTS.body }}>
-                        {typeof val === "number" ? `${val}°` : val}
+                        <SourceHover provenance={ex.provenance} fieldKey={`rom:${joint}`}>{typeof val === "number" ? `${val}°` : val}</SourceHover>
                         {pctDef !== null && pctDef > 5 && <span style={{ fontSize: 10, color: "#dc2626", marginLeft: 4 }}>{pctDef}%↓</span>}
                       </td>
                       <td style={{ padding: "5px 6px", color: "#9ca3af", fontFamily: FONTS.body }}>{norm != null ? `${norm}°` : "—"}</td>
@@ -1422,7 +1423,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
                 {Object.entries(ex.mmt).map(([muscle, grade]) => (
                   <tr key={muscle} style={{ borderBottom: "1px solid #f1f5f9" }}>
                     <td style={{ padding: "5px 6px", color: "#374151", fontFamily: FONTS.body }}>{muscle}</td>
-                    <td style={{ padding: "5px 6px", fontWeight: 600, fontFamily: "monospace", color: parseFloat(grade) < 4 ? "#dc2626" : "#1e293b" }}>{grade}</td>
+                    <td style={{ padding: "5px 6px", fontWeight: 600, fontFamily: "monospace", color: parseFloat(grade) < 4 ? "#dc2626" : "#1e293b" }}><SourceHover provenance={ex.provenance} fieldKey={`mmt:${muscle}`}>{grade}</SourceHover></td>
                   </tr>
                 ))}
               </tbody>
@@ -1434,7 +1435,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4, fontFamily: FONTS.body }}>Outcome Score</div>
             {ex.functionalOutcomeScore
-              ? <div style={{ fontSize: 13, color: "#1e293b", fontFamily: FONTS.body, fontWeight: 600 }}>{ex.functionalOutcomeScore}</div>
+              ? <div style={{ fontSize: 13, color: "#1e293b", fontFamily: FONTS.body, fontWeight: 600 }}><SourceHover provenance={ex.provenance} fieldKey="functionalOutcomeScore">{ex.functionalOutcomeScore}</SourceHover></div>
               : <NotDocumented what="standardized outcome measure" docNoun="evaluation" />}
           </div>
         )}
@@ -1445,7 +1446,7 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
             ? ex.functionalLimitations.map((lim, i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 3, alignItems: "flex-start" }}>
                 <span style={{ color: "#dc2626", fontSize: 11, marginTop: 2, flexShrink: 0 }}>✕</span>
-                <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4, fontFamily: FONTS.body }}>{lim}</span>
+                <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4, fontFamily: FONTS.body }}><SourceHover provenance={ex.provenance} fieldKey={`functionalLimitations:${i}`}>{lim}</SourceHover></span>
               </div>
             ))
             : <NotDocumented what="functional limitations" docNoun="evaluation" />}
