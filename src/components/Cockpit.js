@@ -2976,45 +2976,6 @@ function SubmissionsPanel({ submissions, onClose, onForward, onRefresh }) {
 }
 
 // ── COCKPIT ROOT ───────────────────────────────────────────────────────────────
-// ── VISITS STRIP ───────────────────────────────────────────────────────────────
-// Always visible under the top bar: how many visits the provider is asking for and,
-// on a subsequent request, how many were already approved earlier in the episode
-// (the same cumulativeVisits GET /v1/episode-context reports; prior finalized
-// submissions only, never this case). The decision is the reviewer's; this is context.
-export function VisitsStrip({ kase }) {
-  const isSubsequent = kase.reviewType === "subsequent" || kase.contract?.reviewType === "subsequent";
-  const requested = kase.requestedVisits ?? kase.contract?.extraction?.requestedVisits ?? null;
-  const [ep, setEp] = useState({ state: "idle", cumulative: null });
-  useEffect(() => {
-    setEp({ state: "idle", cumulative: null });
-    if (!isSubsequent || !kase.isLive || !kase.memberId || kase.memberId === "—" || !kase.discipline) return;
-    const token = localStorage.getItem("cogentus_token") || "";
-    if (!token) { setEp({ state: "error", cumulative: null }); return; }
-    let cancelled = false;
-    setEp({ state: "loading", cumulative: null });
-    fetch(`${API_BASE}/v1/episode-context?memberId=${encodeURIComponent(kase.memberId)}&discipline=${encodeURIComponent(kase.discipline)}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.ok ? r.json() : Promise.reject(new Error("bad")))
-      .then(d => { if (!cancelled) setEp({ state: "ok", cumulative: Number(d.cumulativeVisits) || 0 }); })
-      .catch(() => { if (!cancelled) setEp({ state: "error", cumulative: null }); });
-    return () => { cancelled = true; };
-  }, [isSubsequent, kase.isLive, kase.caseId, kase.memberId, kase.discipline]);
-
-  const lab = { fontSize: 11, color: "rgba(255,255,255,0.65)", fontFamily: FONTS.body };
-  const num = { fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.body };
-  const toDate = ep.state === "ok" ? ep.cumulative : null;
-  const reqText = requested != null ? `${requested} ${Number(requested) === 1 ? "visit" : "visits"}` : "not stated";
-  const dateText = ep.state === "loading" ? "…" : toDate != null ? `${toDate} ${toDate === 1 ? "visit" : "visits"}` : ep.state === "error" ? "could not load" : "none on file";
-  return (
-    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center", gap: "2px 22px", flex: "1 1 auto", minWidth: 0, textAlign: "center" }}>
-      <span><span style={lab}>Requested by provider: </span><span style={num}>{reqText}</span></span>
-      {isSubsequent && <span><span style={lab}>Approved to date: </span><span style={num}>{dateText}</span></span>}
-      {isSubsequent && toDate != null && requested != null && (
-        <span style={lab}>Total if approved in full: <span style={num}>{toDate + Number(requested)}</span></span>
-      )}
-    </div>
-  );
-}
-
 export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, onCaseDone, onHoldCase, onReleaseCase }) {
   // A member's other authorization opened from the timeline. Read only: it
   // replaces the case on screen but never the one the reviewer holds.
@@ -3397,8 +3358,6 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
           <span style={{ fontSize: 16, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading, letterSpacing: "-0.02em" }}>CogentCR</span>
         </div>
 
-        <VisitsStrip kase={kase} />
-
         <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading }}>
             {kase.caseId}
@@ -3510,8 +3469,7 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             />
           </div>
         </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
           {viewedCase && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 20px", background: "#fffbeb", borderBottom: "1px solid #fcd34d", fontFamily: FONTS.body }}>
               <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600 }}>
@@ -3531,7 +3489,6 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             onToggleDocs={() => { setShowDocs(s => !s); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
             showDocs={showDocs}
           />
-          </div>
         </div>
         <div style={{ flex: "0 0 31%", minWidth: 330, minHeight: 0, height: "100%", background: "#fff", overflowY: "auto", overflowX: "hidden" }}>
           <DeterminationZone
