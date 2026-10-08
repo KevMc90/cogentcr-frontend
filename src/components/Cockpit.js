@@ -3005,7 +3005,7 @@ export function VisitsStrip({ kase }) {
   const reqText = requested != null ? `${requested} ${Number(requested) === 1 ? "visit" : "visits"}` : "not stated";
   const dateText = ep.state === "loading" ? "…" : toDate != null ? `${toDate} ${toDate === 1 ? "visit" : "visits"}` : ep.state === "error" ? "could not load" : "none on file";
   return (
-    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 18px", padding: "7px 20px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center", gap: "2px 22px", padding: "6px 20px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", flexShrink: 0, textAlign: "center" }}>
       <span><span style={lab}>Requested by provider: </span><span style={num}>{reqText}</span></span>
       {isSubsequent && <span><span style={lab}>Approved to date: </span><span style={num}>{dateText}</span></span>}
       {isSubsequent && toDate != null && requested != null && (
@@ -3508,7 +3508,9 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             />
           </div>
         </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <VisitsStrip kase={kase} />
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           {viewedCase && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 20px", background: "#fffbeb", borderBottom: "1px solid #fcd34d", fontFamily: FONTS.body }}>
               <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600 }}>
@@ -3522,13 +3524,13 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
               </button>
             </div>
           )}
-          <VisitsStrip kase={kase} />
           <RecommendationStrip kase={kase} engineState={engineState} selectedPlan={selectedPlan} />
           <EvidenceZone
             kase={kase}
             onToggleDocs={() => { setShowDocs(s => !s); setShowAuditLog(false); setShowSubmissions(false); setShowCaseTimeline(false); }}
             showDocs={showDocs}
           />
+          </div>
         </div>
         <div style={{ flex: "0 0 31%", minWidth: 330, minHeight: 0, height: "100%", background: "#fff", overflowY: "auto", overflowX: "hidden" }}>
           <DeterminationZone
