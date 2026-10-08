@@ -60,62 +60,119 @@ function groupByBodyRegion(requestLines) {
   return sections;
 }
 
-function TimelineRow({ line, isCurrent }) {
+function QuickFact({ label, children }) {
+  return (
+    <div style={{ display: "flex", gap: 8, fontSize: 11, fontFamily: FONTS.body, lineHeight: 1.45 }}>
+      <span style={{ flex: "0 0 78px", color: "#64748b", fontWeight: 600 }}>{label}</span>
+      <span style={{ flex: 1, minWidth: 0, color: "#1e293b", overflowWrap: "anywhere" }}>{children}</span>
+    </div>
+  );
+}
+
+function TimelineRow({ line, isCurrent, onOpenCase }) {
+  const [open, setOpen] = useState(false);
   const status = statusStyle(line && line.status);
   const decision = line && line.decision;
   const units = decision && decision.unitsApproved != null ? decision.unitsApproved : null;
+  const codes = Array.isArray(line && line.diagnosisCodes) ? line.diagnosisCodes : [];
+  const canOpen = !isCurrent && !!onOpenCase && !!line && line.source === "legacy_submission" && !!line.caseId;
 
   return (
     <div
       style={{
-        padding: "8px 10px",
         borderRadius: 7,
         border: isCurrent ? `1.5px solid ${NAVY}` : "1px solid #e2e8f0",
         background: isCurrent ? "#eff6ff" : "#fff",
         marginBottom: 6,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: FONTS.body }}>
-          {(line && line.lineOfBusiness) || "Unknown service"}
-        </span>
-        {isCurrent && (
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        title={open ? "Hide summary" : "Quick view"}
+        style={{
+          display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+          padding: "8px 10px", background: "transparent", border: "none", borderRadius: 7,
+          fontFamily: FONTS.body,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: FONTS.body }}>
+            {(line && line.lineOfBusiness) || "Unknown service"}
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {isCurrent && (
+              <span
+                style={{
+                  fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                  background: NAVY, color: "#fff", fontFamily: FONTS.body,
+                  textTransform: "uppercase", letterSpacing: "0.06em",
+                }}
+              >
+                Viewing
+              </span>
+            )}
+            <span aria-hidden="true" style={{ fontSize: 10, color: "#94a3b8" }}>{open ? "▴" : "▾"}</span>
+          </span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
           <span
             style={{
-              fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
-              background: NAVY, color: "#fff", fontFamily: FONTS.body,
-              textTransform: "uppercase", letterSpacing: "0.06em", flexShrink: 0,
+              fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: status.bg, color: status.text, border: `1px solid ${status.border}`,
+              fontFamily: FONTS.body, textTransform: "uppercase", letterSpacing: "0.04em",
             }}
           >
-            Viewing
+            {statusLabel(line && line.status)}
           </span>
-        )}
-      </div>
+          <span style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>
+            {fmtDate(line && line.createdAt)}
+          </span>
+          {units != null && (
+            <span style={{ fontSize: 11, color: "#15803d", fontFamily: FONTS.body, fontWeight: 600 }}>
+              {units} {units === 1 ? "visit" : "visits"}
+            </span>
+          )}
+        </div>
+      </button>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
-        <span
-          style={{
-            fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-            background: status.bg, color: status.text, border: `1px solid ${status.border}`,
-            fontFamily: FONTS.body, textTransform: "uppercase", letterSpacing: "0.04em",
-          }}
-        >
-          {statusLabel(line && line.status)}
-        </span>
-        <span style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>
-          {fmtDate(line && line.createdAt)}
-        </span>
-        {units != null && (
-          <span style={{ fontSize: 11, color: "#15803d", fontFamily: FONTS.body, fontWeight: 600 }}>
-            {units} {units === 1 ? "visit" : "visits"}
-          </span>
-        )}
-      </div>
+      {open && (
+        <div style={{ padding: "2px 10px 10px", borderTop: "1px solid #e2e8f0", display: "flex", flexDirection: "column", gap: 4, paddingTop: 8 }}>
+          <QuickFact label="Case">{(line && line.caseId) || "—"}</QuickFact>
+          <QuickFact label="Status">{statusLabel(line && line.status)}</QuickFact>
+          <QuickFact label="Received">{fmtDate(line && line.createdAt)}</QuickFact>
+          {line && line.priority && <QuickFact label="Priority">{statusLabel(line.priority)}</QuickFact>}
+          {codes.length > 0 && <QuickFact label="Diagnosis">{codes.join(", ")}</QuickFact>}
+          {decision && decision.decision && (
+            <QuickFact label="Decision">
+              {decision.decision}{units != null ? ` · ${units} ${units === 1 ? "visit" : "visits"} approved` : ""}
+            </QuickFact>
+          )}
+          {!decision && (
+            <QuickFact label="Decision"><span style={{ color: "#94a3b8" }}>None recorded yet</span></QuickFact>
+          )}
+          {canOpen && (
+            <button
+              type="button"
+              onClick={() => onOpenCase(line.caseId)}
+              style={{
+                marginTop: 6, alignSelf: "flex-start", padding: "5px 12px", borderRadius: 6,
+                border: `1px solid ${NAVY}`, background: NAVY, color: "#fff",
+                fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: FONTS.body,
+              }}
+            >
+              Open this authorization
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-export default function MemberTimeline({ token, memberId, currentCaseId, apiBase }) {
+export default function MemberTimeline({ token, memberId, currentCaseId, apiBase, onOpenCase }) {
   const [timeline, setTimeline] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -220,6 +277,7 @@ export default function MemberTimeline({ token, memberId, currentCaseId, apiBase
                 key={(line && line.caseId) || i}
                 line={line}
                 isCurrent={!!currentCaseId && !!line && line.caseId === currentCaseId}
+                onOpenCase={onOpenCase}
               />
             ))}
           </div>

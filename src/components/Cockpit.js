@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMe
 import { parseRequestedFreqWeeks, formatVisitLine } from "../utils/visitComparison";
 import { buildUNFNote } from "../utils/unfNote";
 import MemberTimeline from "./MemberTimeline";
+import { submissionToCockpitCase } from "../utils/cockpitCase";
 
 const API_BASE =
   process.env.REACT_APP_API_BASE ||
@@ -1816,36 +1817,70 @@ function ActionBtn({ kbd, label, color, bg, border, onClick, disabled, compact }
 // One of the six always-visible decisions. Same colors and shortcut keys as the
 // old stacked buttons; `active` marks the decision whose inline form is open and
 // `suggested` marks the one the engine's recommendation lines up with.
-function DecisionTile({ kbd, label, color, bg, border, onClick, active, suggested }) {
-  const [hover, setHover] = useState(false);
+function DeterminationMenu({ options, activeKey, suggestedKey, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const active = options.find(o => o[0] === activeKey) || null;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      aria-pressed={!!active}
-      style={{
-        position: "relative", display: "flex", alignItems: "flex-start", gap: 8,
-        padding: "10px 10px", minHeight: 52, textAlign: "left", cursor: "pointer",
-        border: `${active ? 2 : 1.5}px solid ${active ? color : border}`,
-        borderRadius: 8, background: active || hover ? bg : "#fff",
-        transition: "all 0.12s", fontFamily: FONTS.body,
-      }}
-    >
-      {suggested && (
-        <span style={{
-          position: "absolute", top: -8, right: 8, fontSize: 9, fontWeight: 700,
-          letterSpacing: "0.05em", textTransform: "uppercase", color: NAVY_MID,
-          background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "0 7px",
-        }}>AI suggests</span>
+    <div ref={wrapRef}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+          width: "100%", padding: "11px 14px", borderRadius: 8, cursor: "pointer",
+          border: `1.5px solid ${active ? active[3] : NAVY}`,
+          background: active ? active[4] : NAVY,
+          color: active ? active[3] : "#fff",
+          fontFamily: FONTS.body, fontSize: 13.5, fontWeight: 700,
+        }}
+      >
+        <span>{active ? `Determination: ${active[2]}` : "Determination"}</span>
+        <span aria-hidden="true" style={{ fontSize: 11 }}>{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <div role="menu" style={{ marginTop: 6, border: "1px solid #e2e8f0", borderRadius: 8, background: "#fff", boxShadow: "0 4px 14px rgba(15,23,42,0.1)", overflow: "hidden" }}>
+          {options.map(([key, kbd, label, color, bg, border]) => (
+            <button
+              key={key}
+              role="menuitem"
+              onClick={() => { setOpen(false); onSelect(key); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+                padding: "9px 12px", border: "none", borderBottom: "1px solid #f1f5f9",
+                background: activeKey === key ? bg : "#fff", cursor: "pointer", fontFamily: FONTS.body,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = bg; }}
+              onMouseLeave={e => { e.currentTarget.style.background = activeKey === key ? bg : "#fff"; }}
+            >
+              <span style={{
+                width: 20, height: 20, borderRadius: 5, background: border, color,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                fontSize: 11, fontWeight: 800, flexShrink: 0,
+              }}>{kbd}</span>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color }}>{label}</span>
+              {suggestedKey === key && (
+                <span style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase",
+                  color: NAVY_MID, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "1px 7px",
+                }}>AI suggests</span>
+              )}
+            </button>
+          ))}
+        </div>
       )}
-      <span style={{
-        width: 20, height: 20, borderRadius: 5, background: border, color,
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        fontSize: 11, fontWeight: 800, flexShrink: 0,
-      }}>{kbd}</span>
-      <span style={{ fontSize: 12.5, fontWeight: 600, color, lineHeight: 1.25, paddingTop: 1 }}>{label}</span>
-    </button>
+    </div>
   );
 }
 
@@ -2189,7 +2224,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
   onDenyNoteChange, onDenySignoffSubmit,
   onSendToMdSubmit,
   onCancelAction, onNavigate, hideQueueNav,
-  onHoldCase, onReleaseCase, onRationaleChange, canDecide }) {
+  onHoldCase, onReleaseCase, onRationaleChange, canDecide, viewing }) {
 
   const decided    = decisions[kase.caseId];
   const rec        = kase.contract?.recommendation;
@@ -2206,8 +2241,19 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
 
   return (
     <div>
-      <ZoneHeader title="Determination" />
+      <ZoneHeader title="Review" />
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* Review note — the editable text copied into BBI. Always visible once
+            the engine has a contract, before and after a decision is recorded. */}
+        {kase.contract && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>
+              Review note
+            </div>
+            <UNFNotePanel kase={kase} onReleaseCase={onReleaseCase} />
+          </div>
+        )}
 
         {/* Decided overlay with audit status */}
         {decided && (
@@ -2278,7 +2324,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
             case here never sees a button the server would 403). */}
         {!decided && kase.contract && !canDecide && (
           <div style={{ padding: "14px", borderRadius: 8, border: "1px dashed #e2e8f0", background: "#f8fafc", textAlign: "center" }}>
-            <span style={{ fontSize: 12, color: "#94a3b8", fontFamily: FONTS.body }}>View only — only a reviewer or medical director can record a determination.</span>
+            <span style={{ fontSize: 12, color: "#94a3b8", fontFamily: FONTS.body }}>{viewing ? "Viewing another authorization — read only. Return to your case to record a determination." : "View only — only a reviewer or medical director can record a determination."}</span>
           </div>
         )}
 
@@ -2301,13 +2347,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
             ["send_md",      "M", "Send to physician review", "#6b21a8", "#faf5ff", "#d8b4fe"],
           ];
           return (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, paddingTop: 4 }}>
-              {tiles.map(([key, kbd, label, color, bg, border]) => (
-                <DecisionTile key={key} kbd={kbd} label={label} color={color} bg={bg} border={border}
-                  active={activeKey === key} suggested={suggestedKey === key}
-                  onClick={() => onAction(key)} />
-              ))}
-            </div>
+            <DeterminationMenu options={tiles} activeKey={activeKey} suggestedKey={suggestedKey} onSelect={onAction} />
           );
         })()}
 
@@ -2408,17 +2448,6 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
               <ActionBtn kbd="↵" label="Send" color="#fff" bg={rationaleEdit.trim() ? "#6b21a8" : "#d8b4fe"} border={rationaleEdit.trim() ? "#6b21a8" : "#d8b4fe"} disabled={!rationaleEdit.trim()} onClick={onSendToMdSubmit} compact />
               <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
             </div>
-          </div>
-        )}
-
-        {/* Review note — the editable text copied into BBI. Always visible once
-            the engine has a contract, before and after a decision is recorded. */}
-        {kase.contract && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>
-              Review note
-            </div>
-            <UNFNotePanel kase={kase} onReleaseCase={onReleaseCase} />
           </div>
         )}
 
@@ -2846,7 +2875,12 @@ function SubmissionsPanel({ submissions, onClose, onForward, onRefresh }) {
 }
 
 // ── COCKPIT ROOT ───────────────────────────────────────────────────────────────
-export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDone, onHoldCase, onReleaseCase }) {
+export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, onCaseDone, onHoldCase, onReleaseCase }) {
+  // A member's other authorization opened from the timeline. Read only: it
+  // replaces the case on screen but never the one the reviewer holds.
+  const [viewedCase, setViewedCase]       = useState(null);
+  const [viewState, setViewState]         = useState({ loading: false, error: "" });
+  const liveCase = viewedCase || assignedCase;
   const [cursor, setCursor]               = useState(0);
   const [decisions, setDecisions]         = useState({});
   const [actionState, setActionState]     = useState("idle");
@@ -2870,7 +2904,7 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
   const [caseTimelineLoading, setCaseTimelineLoading] = useState(false);
   // Phase 5: plan config
   const [plans, setPlans]                 = useState([]);
-  const [selectedPlanId, setSelectedPlanId] = useState(liveCase?.planRuleSet?.planId || null);
+  const [selectedPlanId, setSelectedPlanId] = useState(assignedCase?.planRuleSet?.planId || null);
   // Phase 6: provider submissions
   const [submissions, setSubmissions]       = useState([]);
   const [submissionCases, setSubmissionCases] = useState([]);
@@ -2885,7 +2919,26 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
   // for that same reason rather than showing controls the backend will
   // reject with a 403). CLAUDE.md rule 2: enforced in the backend already —
   // this is the UI half of "not only the UI."
-  const canDecide = user?.role === "reviewer" || user?.role === "medical_director";
+  const canDecide = (user?.role === "reviewer" || user?.role === "medical_director") && !viewedCase;
+
+  const assignedCaseId = assignedCase?.caseId ?? null;
+  useEffect(() => { setViewedCase(null); setViewState({ loading: false, error: "" }); }, [assignedCaseId]);
+
+  const openMemberCase = useCallback(async (caseId) => {
+    setViewState({ loading: true, error: "" });
+    try {
+      const r = await fetch(`${API_BASE}/v1/submissions/${caseId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("cogentus_token") || ""}` },
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      if (!data.submission) throw new Error("empty");
+      setViewedCase(submissionToCockpitCase(data.submission, assignedCase?.discipline || "PT"));
+      setViewState({ loading: false, error: "" });
+    } catch {
+      setViewState({ loading: false, error: "Could not open that authorization." });
+    }
+  }, [assignedCase]);
 
   // Stage 1 "Rapid Note": whether the plan selector has been touched this
   // session — once it has, the engine effect below switches from "fetch the
@@ -3040,7 +3093,7 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
     setDenyNote("");
 
     // When reviewer is working a single assigned live case, signal done after audit fires
-    if (hideQueueNav && onCaseDone && kase.isLive) {
+    if (hideQueueNav && onCaseDone && kase.isLive && !viewedCase) {
       setTimeout(onCaseDone, 1800);
     }
 
@@ -3222,11 +3275,6 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 16, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading, letterSpacing: "-0.02em" }}>CogentCR</span>
-          <button onClick={onBack} style={{
-            background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: 5, padding: "3px 10px", color: "rgba(255,255,255,0.75)",
-            fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600,
-          }}>UR Form</button>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
@@ -3316,7 +3364,13 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
               memberId={kase.memberId && kase.memberId !== "—" ? kase.memberId : null}
               currentCaseId={kase.caseId}
               apiBase={API_BASE}
+              onOpenCase={openMemberCase}
             />
+            {(viewState.loading || viewState.error) && (
+              <div style={{ padding: "0 20px 10px", fontSize: 11, fontFamily: FONTS.body, color: viewState.error ? "#991b1b" : "#64748b" }}>
+                {viewState.loading ? "Opening…" : viewState.error}
+              </div>
+            )}
           </div>
           <div style={{ flex: "0 0 auto", maxHeight: "40%", overflowY: "auto", borderTop: "1px solid #e2e8f0", background: "#fff" }}>
             <DocumentsList
@@ -3326,6 +3380,19 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: "100%", background: "#fff", borderRight: "1px solid #e2e8f0", overflowY: "auto", overflowX: "hidden" }}>
+          {viewedCase && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "8px 20px", background: "#fffbeb", borderBottom: "1px solid #fcd34d", fontFamily: FONTS.body }}>
+              <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600 }}>
+                Viewing {viewedCase.caseId} — read only. This is not the case you are reviewing.
+              </span>
+              <button
+                onClick={() => setViewedCase(null)}
+                style={{ padding: "4px 12px", borderRadius: 6, border: "1px solid #92400e", background: "#fff", color: "#92400e", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: FONTS.body }}
+              >
+                Back to my case
+              </button>
+            </div>
+          )}
           <RecommendationStrip kase={kase} engineState={engineState} selectedPlan={selectedPlan} />
           <EvidenceZone
             kase={kase}
@@ -3363,8 +3430,9 @@ export default function Cockpit({ user, onBack, liveCase, hideQueueNav, onCaseDo
             onCancelAction={() => { setActionState("idle"); setPendReason(""); setPendDetails(""); setApproveChecks([]); setDenyNote(""); setRationaleEdit(""); }}
             onNavigate={handleNavigate}
             hideQueueNav={!!hideQueueNav}
-            onHoldCase={kase.isLive ? onHoldCase : null}
-            onReleaseCase={kase.isLive ? onReleaseCase : null}
+            onHoldCase={kase.isLive && !viewedCase ? onHoldCase : null}
+            onReleaseCase={kase.isLive && !viewedCase ? onReleaseCase : null}
+            viewing={!!viewedCase}
             rationaleEdit={rationaleEdit}
             onRationaleChange={setRationaleEdit}
           />
