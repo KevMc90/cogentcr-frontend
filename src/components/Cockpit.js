@@ -5,6 +5,7 @@ import MemberTimeline from "./MemberTimeline";
 import SourceHover from "./SourceHover";
 import { submissionToCockpitCase } from "../utils/cockpitCase";
 import { evidenceViewFor, evidenceSummaryLine } from "../utils/evidenceView";
+import { analyzeNote } from "../utils/noteAlignment";
 
 const API_BASE =
   process.env.REACT_APP_API_BASE ||
@@ -1989,7 +1990,7 @@ function ActionBtn({ kbd, label, color, bg, border, onClick, disabled, compact }
 // One of the six always-visible decisions. Same colors and shortcut keys as the
 // old stacked buttons; `active` marks the decision whose inline form is open and
 // `suggested` marks the one the engine's recommendation lines up with.
-function DeterminationMenu({ options, activeKey, suggestedKey, onSelect }) {
+function DeterminationMenu({ options, activeKey, suggestedKey, onSelect, disabledKeys = {} }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const active = options.find(o => o[0] === activeKey) || null;
@@ -2023,17 +2024,22 @@ function DeterminationMenu({ options, activeKey, suggestedKey, onSelect }) {
       </button>
       {open && (
         <div role="menu" style={{ marginTop: 6, border: "1px solid #e2e8f0", borderRadius: 8, background: "#fff", boxShadow: "0 4px 14px rgba(15,23,42,0.1)", overflow: "hidden" }}>
-          {options.map(([key, kbd, label, color, bg, border]) => (
+          {options.map(([key, kbd, label, color, bg, border]) => {
+            const blocked = disabledKeys[key];
+            return (
             <button
               key={key}
               role="menuitem"
-              onClick={() => { setOpen(false); onSelect(key); }}
+              disabled={!!blocked}
+              title={blocked || undefined}
+              onClick={() => { if (blocked) return; setOpen(false); onSelect(key); }}
               style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
                 padding: "9px 12px", border: "none", borderBottom: "1px solid #f1f5f9",
-                background: activeKey === key ? bg : "#fff", cursor: "pointer", fontFamily: FONTS.body,
+                background: activeKey === key ? bg : "#fff", cursor: blocked ? "not-allowed" : "pointer", fontFamily: FONTS.body,
+                opacity: blocked ? 0.4 : 1,
               }}
-              onMouseEnter={e => { e.currentTarget.style.background = bg; }}
+              onMouseEnter={e => { if (!blocked) e.currentTarget.style.background = bg; }}
               onMouseLeave={e => { e.currentTarget.style.background = activeKey === key ? bg : "#fff"; }}
             >
               <span style={{
@@ -2049,7 +2055,8 @@ function DeterminationMenu({ options, activeKey, suggestedKey, onSelect }) {
                 }}>AI suggests</span>
               )}
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -2221,7 +2228,7 @@ function DocumentsList({ kase, onOpen }) {
 // Universal Note Format — primary content of the Determination (right) panel.
 // A reviewer reads the generated note and edits it in place if needed. Edits
 // are local UI state only and never touch kase.contract.
-function UNFNotePanel({ kase }) {
+function UNFNotePanel({ kase, onNoteChange }) {
   const rec = kase.contract.recommendation;
   const ext = kase.contract.extraction || {};
   const isSubsequent = kase.reviewType === "subsequent";
@@ -2281,6 +2288,7 @@ function UNFNotePanel({ kase }) {
   }, [kase.contract, kase.providerNotes, isSubsequent, episodeOverride]);
 
   const [noteText, setNoteText] = useState(builtNote);
+  useEffect(() => { if (onNoteChange) onNoteChange(kase.caseId, noteText); }, [kase.caseId, noteText]); // eslint-disable-line
 
   // The note box sizes itself to the note, so HPI through Approved Visits is
   // visible without dragging. It used to open at 280px and stop at 480px —
@@ -2341,11 +2349,9 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
   partialVisits, pendReason, pendDetails, approveChecks, denyNote, rationaleEdit,
   onAction, onPartialVisitsChange, onPartialSubmit, onDenyConfirm,
   onPendReasonChange, onPendDetailsChange, onPendSubmit,
-  onApproveChecksChange, onApproveSubmit,
   onDenyNoteChange, onDenySignoffSubmit,
-  onSendToMdSubmit,
   onCancelAction, onNavigate, hideQueueNav,
-  onHoldCase, onReleaseCase, onRationaleChange, canDecide, viewing }) {
+  onHoldCase, onReleaseCase, onRationaleChange, canDecide, viewing, alignment, onNoteChange }) {
 
   const decided    = decisions[kase.caseId];
   const rec        = kase.contract?.recommendation;
@@ -2372,7 +2378,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>
               Review note
             </div>
-            <UNFNotePanel kase={kase} />
+            <UNFNotePanel kase={kase} onNoteChange={onNoteChange} />
           </div>
         )}
 
@@ -2458,31 +2464,23 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
         {!decided && kase.contract && canDecide && (() => {
           const recDet = (rec?.determination || "").toLowerCase();
           const suggestedKey = recDet.startsWith("approved") ? "approve" : recDet.startsWith("pend") ? "pend" : null;
-          const activeKey = { edit_approve: "edit_approve", partial_input: "partial", deny_confirm: "deny", deny_signoff: "deny", pend_input: "pend", send_md_confirm: "send_md" }[actionState] || null;
+          const activeKey = { partial_input: "partial", deny_confirm: "deny", deny_signoff: "deny", pend_input: "pend" }[actionState] || null;
           const tiles = [
-            ["approve",      "A", "Approve as recommended",   "#166534", "#f0fdf4", "#86efac"],
-            ["edit_approve", "E", "Edit and approve",         NAVY,      "#eff6ff", "#93c5fd"],
+            ["approve",      "A", "Approve",                  "#166534", "#f0fdf4", "#86efac"],
             ["partial",      "P", "Partial approval",         "#92400e", "#fffbeb", "#fcd34d"],
             ["deny",         "D", "Full denial",              "#991b1b", "#fef2f2", "#fca5a5"],
             ["pend",         "N", "Request information",      "#1d4ed8", "#eff6ff", "#93c5fd"],
-            ["send_md",      "M", "Send to physician review", "#6b21a8", "#faf5ff", "#d8b4fe"],
           ];
+          const disabledKeys = {};
+          tiles.forEach(([key]) => {
+            if (!alignment.allowed.includes(key)) disabledKeys[key] = "The note doesn't match this determination. " + alignment.message;
+          });
+          const ok = alignment.status === "ok";
           return (
-            <DeterminationMenu options={tiles} activeKey={activeKey} suggestedKey={suggestedKey} onSelect={onAction} />
-          );
-        })()}
-
-        {!decided && canDecide && actionState === "edit_approve" && (() => {
-          const engineRationale = (rec?.rationale || "").trim();
-          const canSubmit = rationaleEdit.trim().length > 0 && rationaleEdit.trim() !== engineRationale;
-          return (
-            <div style={{ padding: "12px 14px", borderRadius: 8, border: `1.5px solid ${NAVY_MID}`, background: "#eff6ff" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: FONTS.heading, marginBottom: 2 }}>Edit and approve</div>
-              <div style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>Change the rationale below before approving — a one-line reason is required.</div>
-              <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color={NAVY} />
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <ActionBtn kbd="↵" label="Submit" color="#fff" bg={canSubmit ? NAVY : "#cbd5e1"} border={canSubmit ? NAVY : "#cbd5e1"} disabled={!canSubmit} onClick={onApproveSubmit} compact />
-                <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
+            <div>
+              <DeterminationMenu options={tiles} activeKey={activeKey} suggestedKey={suggestedKey} onSelect={onAction} disabledKeys={disabledKeys} />
+              <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.45, fontFamily: FONTS.body, color: ok ? "#475569" : "#92400e" }}>
+                {alignment.message}
               </div>
             </div>
           );
@@ -2491,12 +2489,9 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
         {!decided && canDecide && actionState === "partial_input" && (
           <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #fcd34d", background: "#fffbeb" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", fontFamily: FONTS.heading, marginBottom: 6 }}>Partial approval — visits</div>
-            <input
-              type="number" min={0} value={partialVisits}
-              onChange={e => onPartialVisitsChange(e.target.value)}
-              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1.5px solid #fcd34d", fontSize: 13, fontFamily: FONTS.body, boxSizing: "border-box", marginBottom: 8 }}
-            />
-            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#92400e" />
+            <div style={{ fontSize: 12, color: "#92400e", fontFamily: FONTS.body }}>
+              {partialVisits} of {alignment.requestedVisits ?? "-"} requested visits, as written in the note. Change the note to change this.
+            </div>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <ActionBtn kbd="↵" label="Submit" color="#fff" bg="#92400e" border="#92400e" onClick={onPartialSubmit} compact />
               <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
@@ -2522,7 +2517,6 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
               placeholder="Internal reviewer note (optional)..." rows={2}
               style={{ width: "100%", borderRadius: 6, border: "1.5px solid #fca5a5", padding: "7px 10px", fontSize: 12, fontFamily: FONTS.body, resize: "vertical", boxSizing: "border-box" }}
             />
-            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#991b1b" />
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <ActionBtn kbd="↵" label="Confirm denial" color="#fff" bg="#991b1b" border="#991b1b" onClick={onDenySignoffSubmit} compact />
               <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
@@ -2553,20 +2547,6 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
             <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#1d4ed8" />
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <ActionBtn kbd="↵" label="Send request" color="#fff" bg={pendReason ? "#1d4ed8" : "#93c5fd"} border={pendReason ? "#1d4ed8" : "#93c5fd"} disabled={!pendReason} onClick={onPendSubmit} compact />
-              <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
-            </div>
-          </div>
-        )}
-
-        {!decided && canDecide && actionState === "send_md_confirm" && (
-          <div style={{ padding: "12px 14px", borderRadius: 8, border: "1.5px solid #d8b4fe", background: "#faf5ff" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#6b21a8", fontFamily: FONTS.heading, marginBottom: 2 }}>Send to physician review</div>
-            <div style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body, marginBottom: 6 }}>
-              Your determination ({rec?.determination}, {rec?.approvedVisits} visits) is recorded, but routed to the medical director co-sign queue instead of finalizing. A one-line reason is required.
-            </div>
-            <RationaleEditor value={rationaleEdit} onChange={onRationaleChange} color="#6b21a8" />
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <ActionBtn kbd="↵" label="Send" color="#fff" bg={rationaleEdit.trim() ? "#6b21a8" : "#d8b4fe"} border={rationaleEdit.trim() ? "#6b21a8" : "#d8b4fe"} disabled={!rationaleEdit.trim()} onClick={onSendToMdSubmit} compact />
               <ActionBtn kbd="Esc" label="Cancel" color="#374151" bg="#fff" border="#e2e8f0" onClick={onCancelAction} compact />
             </div>
           </div>
@@ -3011,6 +2991,8 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
   const [approveChecks, setApproveChecks] = useState([]);
   const [denyNote, setDenyNote]           = useState("");
   const [rationaleEdit, setRationaleEdit] = useState("");
+  const [noteState, setNoteState]         = useState({ caseId: null, text: "" });
+  const handleNoteChange = useCallback((caseId, text) => setNoteState({ caseId, text }), []);
   const [showDocs, setShowDocs]           = useState(false);
   const [liveContract, setLiveContract]   = useState(null);
   const [engineState, setEngineState]     = useState("idle");
@@ -3097,6 +3079,15 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
   const selectedPlan = selectedPlanId
     ? (plans.find(p => p.plan_id === selectedPlanId) || null)
     : null;
+
+  // What the note says decides which determinations can be recorded.
+  const alignment = useMemo(
+    () => analyzeNote(
+      noteState.caseId === kase?.caseId ? noteState.text : "",
+      kase?.contract?.extraction?.requestedVisits
+    ),
+    [noteState, kase?.caseId, kase?.contract]
+  );
 
   // Reset cursor only when a new live case arrives. Also resets the plan-
   // override ref (code review caught this missing: App.js never remounts
@@ -3263,23 +3254,21 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
   // confirm/input state, same as before.
   const handleAction = useCallback((type) => {
     if (!canDecide || decisions[kase.caseId] || !kase.contract) return;
+    if (!alignment.allowed.includes(type)) return;
     const rec = kase.contract.recommendation;
     if (type === "approve") {
       recordDecision(
         rec.determination?.startsWith("Approved") ? rec.determination : "Approved",
-        rec.approvedVisits ?? 0,
-        { reviewerRationale: rec.rationale || "" }
+        alignment.approvedVisits ?? 0,
+        { reviewerRationale: alignment.rationale, isEdited: alignment.rationale.trim() !== (rec.rationale || "").trim() }
       );
       return;
     }
     // Every other path pre-fills the rationale from the engine for the
     // reviewer to edit/confirm.
     setRationaleEdit(rec.rationale || "");
-    if (type === "edit_approve") {
-      setApproveChecks([]);
-      setActionState("edit_approve");
-    } else if (type === "partial") {
-      setPartialVisits(String(rec.approvedVisits ?? ""));
+    if (type === "partial") {
+      setPartialVisits(String(alignment.approvedVisits ?? ""));
       setActionState("partial_input");
     } else if (type === "deny") {
       setActionState("deny_confirm");
@@ -3288,10 +3277,13 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
       setPendReason(guessed);
       setPendDetails(guessed ? (PEND_REASONS.find(r => r.value === guessed)?.defaultDetail || "") : "");
       setActionState("pend_input");
-    } else if (type === "send_md") {
-      setActionState("send_md_confirm");
     }
-  }, [kase, decisions, canDecide, recordDecision]);
+  }, [kase, decisions, canDecide, recordDecision, alignment]);
+
+  useEffect(() => {
+    const need = { partial_input: "partial", deny_confirm: "deny", deny_signoff: "deny", pend_input: "pend" }[actionState];
+    if (need && !alignment.allowed.includes(need)) setActionState("idle");
+  }, [alignment, actionState]);
 
   const handleDenyConfirm = useCallback(() => {
     setDenyNote("");
@@ -3299,48 +3291,18 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
   }, []);
 
   const handlePartialSubmit = useCallback(() => {
-    const v = parseInt(partialVisits, 10);
-    recordDecision("Partial Denial", isNaN(v) ? (kase.contract?.recommendation?.approvedVisits ?? 0) : v);
-  }, [partialVisits, kase, recordDecision]);
+    if (!alignment.allowed.includes("partial")) return;
+    recordDecision("Partial Denial", alignment.approvedVisits ?? 0, { reviewerRationale: alignment.rationale });
+  }, [alignment, recordDecision]);
 
   const handlePendSubmit = useCallback(() => {
     recordDecision("Pend", 0, { pendReason, pendDetails, reviewerRationale: rationaleEdit });
   }, [pendReason, pendDetails, rationaleEdit, recordDecision]);
 
-  // "Edit and approve": unlike the one-click "approve" above, this requires
-  // the reviewer to have actually changed the pre-filled rationale — "editing
-  // a recommendation requires a one-line reason" (root CLAUDE.md / the build
-  // plan's decision-bar spec), not just re-submitting the engine's own text
-  // under a different button. Enforced here (disables the submit button,
-  // see DeterminationZone) as well as by this guard.
-  const handleApproveSubmit = useCallback(() => {
-    const rec = kase.contract?.recommendation;
-    const engineRationale = rec?.rationale || "";
-    if (rationaleEdit.trim() === engineRationale.trim() || !rationaleEdit.trim()) return;
-    recordDecision(
-      rec?.determination?.startsWith("Approved") ? rec.determination : "Approved",
-      rec?.approvedVisits ?? 0,
-      { approveChecks: [...approveChecks], reviewerRationale: rationaleEdit, isEdited: true }
-    );
-  }, [approveChecks, rationaleEdit, kase, recordDecision]);
-
   const handleDenySignoffSubmit = useCallback(() => {
-    recordDecision("Full Denial", 0, { denyNote, reviewerRationale: rationaleEdit });
-  }, [denyNote, rationaleEdit, recordDecision]);
-
-  // "Send to physician review": the reviewer's own (possibly edited)
-  // determination is recorded, same as any other action, but forceMdReview
-  // routes it to pending_md_review instead of finalizing — see
-  // rapidnote-backend's POST /v1/audit-event, which now accepts that flag.
-  const handleSendToMdSubmit = useCallback(() => {
-    if (!rationaleEdit.trim()) return;
-    const rec = kase.contract?.recommendation;
-    recordDecision(
-      rec?.determination || "Pend",
-      rec?.approvedVisits ?? 0,
-      { reviewerRationale: rationaleEdit, forceMdReview: true }
-    );
-  }, [rationaleEdit, kase, recordDecision]);
+    if (!alignment.allowed.includes("deny")) return;
+    recordDecision("Full Denial", 0, { denyNote, reviewerRationale: alignment.rationale });
+  }, [denyNote, alignment, recordDecision]);
 
   const handleNavigate = useCallback((i) => {
     setCursor(i);
@@ -3368,11 +3330,9 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
       if (!hideQueueNav && key === "k" && cursor < queue.length - 1) { handleNavigate(cursor + 1); return; }
       if (canDecide && actionState === "idle" && !decisions[kase?.caseId] && kase?.contract) {
         if (key === "a") { handleAction("approve"); return; }
-        if (key === "e") { handleAction("edit_approve"); return; }
         if (key === "p") { handleAction("partial"); return; }
         if (key === "d") { handleAction("deny"); return; }
         if (key === "n") { handleAction("pend"); return; }
-        if (key === "m") { handleAction("send_md"); return; }
       }
     };
     window.addEventListener("keydown", handler);
@@ -3551,11 +3511,8 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             onPendReasonChange={setPendReason}
             onPendDetailsChange={setPendDetails}
             onPendSubmit={handlePendSubmit}
-            onApproveChecksChange={setApproveChecks}
-            onApproveSubmit={handleApproveSubmit}
             onDenyNoteChange={setDenyNote}
             onDenySignoffSubmit={handleDenySignoffSubmit}
-            onSendToMdSubmit={handleSendToMdSubmit}
             canDecide={canDecide}
             onCancelAction={() => { setActionState("idle"); setPendReason(""); setPendDetails(""); setApproveChecks([]); setDenyNote(""); setRationaleEdit(""); }}
             onNavigate={handleNavigate}
@@ -3565,6 +3522,8 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             viewing={!!viewedCase}
             rationaleEdit={rationaleEdit}
             onRationaleChange={setRationaleEdit}
+            alignment={alignment}
+            onNoteChange={handleNoteChange}
           />
         </div>
       </div>
