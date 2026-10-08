@@ -3028,6 +3028,7 @@ function ReviewerShell({ user, token, onLogout }) {
     { key: "ur_form", label: "UR Review Form", group: "tools" },
     { key: "criteria", label: "Criteria Library", group: "tools" },
     { key: "state_rules", label: "State Rules", group: "tools" },
+    { key: "audit_tasks", label: "Auto-approval Audits", group: "tools" },
   ];
 
   const NavBar = () => (
@@ -3390,6 +3391,7 @@ function ReviewerShell({ user, token, onLogout }) {
         {revView === "appeals"     && <AppealsQueueView token={token} />}
         {revView === "criteria"    && <CriteriaLibraryView token={token} />}
         {revView === "state_rules" && <StateRulesView token={token} />}
+        {revView === "audit_tasks" && <AutoApprovalAuditsView token={token} role={user.role} />}
         {revView === "ur_form"     && <URFormEmbed user={user} token={token} />}
 
       </div>
@@ -7563,6 +7565,170 @@ function ReportsView({ token }) {
   );
 }
 
+// ─── Auto-approval (Stage 3): shadow results, per-pack mode, kill switch ──────
+function AutoApprovalView({ token }) {
+  const [settings, setSettings] = React.useState(null);
+  const [summary, setSummary] = React.useState(null);
+  const [days, setDays] = React.useState(30);
+  const [err, setErr] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const load = React.useCallback(() => {
+    setErr("");
+    axios.get(`${API_BASE}/v1/auto-approval/settings`, { headers }).then(r => setSettings(r.data)).catch(e => setErr(e.response?.data?.error || "Could not load settings."));
+    axios.get(`${API_BASE}/v1/auto-approval/shadow-summary`, { headers, params: { days } }).then(r => setSummary(r.data.rows)).catch(() => setSummary([]));
+  }, [token, days]); // eslint-disable-line
+  React.useEffect(() => { load(); }, [load]);
+
+  const modeFor = (packId, svc) => {
+    const row = (settings?.settings || []).find(s => s.pack_id === packId && s.service_code === svc && s.state === "*" && s.plan_id === "*");
+    return row ? row.mode : "shadow";
+  };
+  const setMode = async (packId, svc, mode) => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      await axios.put(`${API_BASE}/v1/auto-approval/settings`, { packId, serviceCode: svc, mode }, { headers });
+      setMsg(`${packId} / ${svc} set to ${mode}.`);
+      load();
+    } catch (e) { setErr(e.response?.data?.error || "Update failed."); }
+    setBusy(false);
+  };
+  const runTests = async (packId) => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      await axios.post(`${API_BASE}/v1/auto-approval/test-runs`, { packId }, { headers });
+      setMsg(`Test run started for ${packId}. Refresh in a minute or two to see the result.`);
+    } catch (e) { setErr(e.response?.data?.error || "Could not start test run."); }
+    setBusy(false);
+  };
+
+  const card = { background: "#fff", borderRadius: 10, border: "1px solid #e2e8f0", padding: "16px 20px", marginBottom: 18 };
+  const th = { textAlign: "left", fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em", padding: "6px 10px", borderBottom: "1px solid #e2e8f0" };
+  const td = { fontSize: 12, color: "#1e293b", padding: "8px 10px", borderBottom: "1px solid #f1f5f9" };
+  const modeColor = { off: "#dc2626", shadow: "#d97706", live: "#16a34a" };
+
+  return (
+    <div style={{ maxWidth: 980, margin: "0 auto", padding: "28px 24px" }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: "#1e293b", fontFamily: "'Fraunces', Georgia, serif", marginBottom: 4 }}>Auto-approval</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 18 }}>
+        Default is <b>shadow</b>: the approval gate decides and logs what it would do, but nothing is approved automatically.
+        Live requires a stored passing pack test run. The gate can only approve in full; every other outcome goes to a human reviewer.
+      </div>
+      {err && <div style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, fontSize: 12, marginBottom: 12 }}>{err}</div>}
+      {msg && <div style={{ background: "#f0fdf4", color: "#166534", padding: "8px 12px", borderRadius: 8, fontSize: 12, marginBottom: 12 }}>{msg}</div>}
+
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b", flex: 1 }}>Would-be auto-approval rate and lane mix</div>
+          <select value={days} onChange={e => setDays(Number(e.target.value))} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db" }}>
+            {[7, 30, 90, 365].map(d => <option key={d} value={d}>Last {d} days</option>)}
+          </select>
+        </div>
+        {!summary ? <div style={{ color: "#9ca3af", fontSize: 12 }}>Loading…</div> : summary.length === 0 ? (
+          <div style={{ color: "#6b7280", fontSize: 12 }}>No gate evaluations recorded in this window.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr>{["Pack", "Mode", "Cases", "Would auto-approve", "Applied", "Review + rec.", "Review, no rec.", "Adverse review"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>{summary.map(r => (
+                <tr key={`${r.pack_id}-${r.pack_version}-${r.mode}`}>
+                  <td style={td}>{r.pack_id}@{r.pack_version}</td>
+                  <td style={{ ...td, color: modeColor[r.mode] || "#374151", fontWeight: 700 }}>{r.mode}</td>
+                  <td style={td}>{r.total}</td>
+                  <td style={td}>{r.would_auto_approve} ({Math.round(r.would_auto_approve_rate * 100)}%)</td>
+                  <td style={td}>{r.applied}</td>
+                  <td style={td}>{r.lane_review_with_recommendation}</td>
+                  <td style={td}>{r.lane_review_without_recommendation}</td>
+                  <td style={td}>{r.lane_adverse_review}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {(settings?.packs || []).map(p => (
+        <div key={p.id} style={card}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>{p.name} <span style={{ fontWeight: 400, color: "#64748b" }}>({p.id}@{p.version})</span></div>
+            <div style={{ flex: 1 }} />
+            <div style={{ fontSize: 11, color: "#475569" }}>
+              {p.latestTestRun
+                ? <>Latest test run: {p.latestTestRun.passed_cases}/{p.latestTestRun.total_cases} agree, {p.latestTestRun.judgment_skipped} judgment skipped — <b style={{ color: p.latestTestRun.passed ? "#16a34a" : "#dc2626" }}>{p.latestTestRun.passed ? "passing" : "not passing"}</b></>
+                : "No recorded test run for this version"}
+            </div>
+            <button disabled={busy} onClick={() => runTests(p.id)} style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, border: "1px solid #1a3a5c", background: "#fff", color: "#1a3a5c", cursor: "pointer" }}>Run pack tests</button>
+          </div>
+          {!p.autoApprovalEnabled ? (
+            <div style={{ fontSize: 12, color: "#6b7280" }}>This pack is recommend-only; auto-approval is not enabled for it.</div>
+          ) : (
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {p.autoApprovalServices.map(svc => {
+                const mode = modeFor(p.id, svc);
+                return (
+                  <div key={svc} style={{ border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", minWidth: 190 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", marginBottom: 6 }}>{svc} <span style={{ color: modeColor[mode], fontWeight: 700 }}>· {mode}</span></div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {["off", "shadow", "live"].map(m => (
+                        <button key={m} disabled={busy || m === mode} onClick={() => setMode(p.id, svc, m)} style={{
+                          fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: m === mode ? "default" : "pointer",
+                          border: `1px solid ${m === mode ? modeColor[m] : "#d1d5db"}`, background: m === mode ? modeColor[m] : "#fff", color: m === mode ? "#fff" : "#374151", fontWeight: 600,
+                        }}>{m === "off" ? "Kill switch" : m}</button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Sampled auto-approvals a human reviewer re-checks (reviewer / medical director only).
+function AutoApprovalAuditsView({ token, role }) {
+  const [tasks, setTasks] = React.useState(null);
+  const [err, setErr] = React.useState("");
+  const headers = { Authorization: `Bearer ${token}` };
+  const canResolve = role === "reviewer" || role === "medical_director";
+  const load = React.useCallback(() => {
+    axios.get(`${API_BASE}/v1/audit-tasks`, { headers }).then(r => setTasks(r.data.tasks)).catch(e => setErr(e.response?.data?.error || "Could not load audit tasks."));
+  }, [token]); // eslint-disable-line
+  React.useEffect(() => { load(); }, [load]);
+  const resolve = async (taskId, outcome) => {
+    const note = outcome === "disagree" ? (window.prompt("What should have happened? (optional)") || "") : "";
+    try { await axios.patch(`${API_BASE}/v1/audit-tasks/${taskId}`, { outcome, note }, { headers }); load(); }
+    catch (e) { setErr(e.response?.data?.error || "Update failed."); }
+  };
+  return (
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 24px" }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: "#1e293b", fontFamily: "'Fraunces', Georgia, serif", marginBottom: 4 }}>Auto-approval audits</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>A sample of cases the system approved on its own. Confirm each approval was appropriate; disagreements are tracked.</div>
+      {err && <div style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, fontSize: 12, marginBottom: 12 }}>{err}</div>}
+      {!tasks ? <div style={{ color: "#9ca3af", fontSize: 12 }}>Loading…</div> : tasks.length === 0 ? (
+        <div style={{ color: "#6b7280", fontSize: 13 }}>No open audit tasks.</div>
+      ) : tasks.map(t => (
+        <div key={t.task_id} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", marginBottom: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>Case {t.case_id}</div>
+            <div style={{ fontSize: 11, color: "#64748b" }}>Pack {t.pack_id} · sampled {new Date(t.created_at).toLocaleString()}</div>
+          </div>
+          {canResolve ? (
+            <>
+              <button onClick={() => resolve(t.task_id, "agree")} style={{ fontSize: 12, fontWeight: 600, padding: "6px 14px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer" }}>Agree</button>
+              <button onClick={() => resolve(t.task_id, "disagree")} style={{ fontSize: 12, fontWeight: 600, padding: "6px 14px", borderRadius: 6, border: "none", background: "#dc2626", color: "#fff", cursor: "pointer" }}>Disagree</button>
+            </>
+          ) : <span style={{ fontSize: 11, color: "#6b7280" }}>Awaiting reviewer</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MasterShell({ user, token, onLogout }) {
   const [masterView, setMasterView] = useState("dashboard");
   const [cockpitCase, setCockpitCase] = useState(null); // set from case rows to open cockpit
@@ -7597,6 +7763,7 @@ function MasterShell({ user, token, onLogout }) {
     ["bulk_import",  "Bulk Import"],
     ["integrations", "Integrations"],
     ["audit",        "Audit"],
+    ["auto_approval", "Auto-approval"],
     ["ur_form",      "UR Form"],
   ];
 
@@ -7642,6 +7809,7 @@ function MasterShell({ user, token, onLogout }) {
       {masterView === "bulk_import"  && <BulkImportView token={token} />}
       {masterView === "users"        && <UserManagementView token={token} />}
       {masterView === "audit"        && <AuditExportView token={token} />}
+      {masterView === "auto_approval" && <AutoApprovalView token={token} />}
     </div>
   );
 }
