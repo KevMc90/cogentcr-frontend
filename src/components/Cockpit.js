@@ -2219,10 +2219,9 @@ function DocumentsList({ kase, onOpen }) {
 
 // ── UNF NOTE PANEL ─────────────────────────────────────────────────────────────
 // Universal Note Format — primary content of the Determination (right) panel.
-// A reviewer reads the generated note, edits it in place if needed, copies it,
-// and pastes it directly into BBI. Nothing here writes back to BBI; the paste
-// is manual. Edits are local UI state only and never touch kase.contract.
-function UNFNotePanel({ kase, onReleaseCase }) {
+// A reviewer reads the generated note and edits it in place if needed. Edits
+// are local UI state only and never touch kase.contract.
+function UNFNotePanel({ kase }) {
   const rec = kase.contract.recommendation;
   const ext = kase.contract.extraction || {};
   const isSubsequent = kase.reviewType === "subsequent";
@@ -2282,7 +2281,6 @@ function UNFNotePanel({ kase, onReleaseCase }) {
   }, [kase.contract, kase.providerNotes, isSubsequent, episodeOverride]);
 
   const [noteText, setNoteText] = useState(builtNote);
-  const [copied, setCopied]     = useState(false);
 
   // The note box sizes itself to the note, so HPI through Approved Visits is
   // visible without dragging. It used to open at 280px and stop at 480px —
@@ -2317,59 +2315,10 @@ function UNFNotePanel({ kase, onReleaseCase }) {
 
   // A new case (or a re-evaluation) gets a fresh auto-fit rather than inheriting
   // the height the reviewer dragged for the previous note.
-  useEffect(() => { setNoteText(builtNote); setCopied(false); setUserSized(false); }, [builtNote]);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(noteText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
-
-  const handleExport = () => {
-    const blob = new Blob([noteText], { type: "text/plain" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `UNF_${kase.caseId || "note"}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  useEffect(() => { setNoteText(builtNote); setUserSized(false); }, [builtNote]);
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <button onClick={handleCopy} style={{
-          flex: 1, padding: "9px 0", borderRadius: 7, border: "none",
-          background: copied ? "#166534" : NAVY_MID, color: "#fff",
-          fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONTS.body,
-          transition: "background 0.15s",
-        }}>
-          {copied ? "✓ Copied" : "Copy Note"}
-        </button>
-        <button onClick={handleExport} style={{
-          padding: "9px 14px", borderRadius: 7, border: "1px solid #e2e8f0",
-          background: "#fff", color: "#374151", fontSize: 12, fontWeight: 600,
-          cursor: "pointer", fontFamily: FONTS.body, whiteSpace: "nowrap",
-        }}>
-          Export .txt
-        </button>
-        {/* Demo cleanup — Return to Queue restored as a small secondary action here
-            (outline style, no fill) after the determination-actions footer it used
-            to live in was removed. Same onReleaseCase callback as before -- opens
-            App.js's existing exit modal (reason prompt) and existing
-            PATCH /v1/submissions/:id/release flow, unchanged. Hold and the
-            determination buttons are intentionally not restored. */}
-        {kase.isLive && onReleaseCase && (
-          <button onClick={onReleaseCase} style={{
-            padding: "9px 14px", borderRadius: 7, border: "1px solid #fca5a5",
-            background: "transparent", color: "#dc2626", fontSize: 12, fontWeight: 600,
-            cursor: "pointer", fontFamily: FONTS.body, whiteSpace: "nowrap",
-          }}>
-            Return to Queue
-          </button>
-        )}
-      </div>
       <textarea
         ref={noteRef}
         value={noteText}
@@ -2416,14 +2365,14 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
       <ZoneHeader title="Review" />
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
 
-        {/* Review note — the editable text copied into BBI. Always visible once
+        {/* Review note — the editable note. Always visible once
             the engine has a contract, before and after a decision is recorded. */}
         {kase.contract && (
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, fontFamily: FONTS.body }}>
               Review note
             </div>
-            <UNFNotePanel kase={kase} onReleaseCase={onReleaseCase} />
+            <UNFNotePanel kase={kase} />
           </div>
         )}
 
@@ -3456,6 +3405,15 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", fontFamily: FONTS.body }}>
             {kase.memberName} · {disciplineLabel(kase.discipline, kase.reviewType)}
           </span>
+          {kase.isLive && !viewedCase && onReleaseCase && (
+            <button onClick={onReleaseCase} style={{
+              background: "rgba(255,255,255,0.08)", border: "1px solid rgba(252,165,165,0.7)",
+              borderRadius: 5, padding: "3px 10px", color: "#fecaca",
+              fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600, whiteSpace: "nowrap",
+            }}>
+              Return to queue
+            </button>
+          )}
           {kase.receivedAt && (() => {
             const priority     = kase.reviewPriority || "standard";
             const hoursAllowed = priority === "urgent" ? 24 : priority === "expedited" ? 8 : 72;
