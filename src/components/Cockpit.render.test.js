@@ -13,7 +13,7 @@ test("Cockpit renders the redesigned layout without crashing", () => {
   const html = renderToString(
     <Cockpit user={{ name: "SYNTHETIC Reviewer", role: "reviewer" }} onBack={() => {}} liveCase={liveCase} />
   );
-  expect(html).toContain("CogentCR");
+  expect(html).toContain("Requested by provider");
   expect(html).toContain("SYN-1");
   expect(html).toContain("More");
 });

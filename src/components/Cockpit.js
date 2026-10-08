@@ -637,13 +637,14 @@ function KbdChip({ k, label, style }) {
 }
 
 // ── ZONE HEADER ────────────────────────────────────────────────────────────────
-function ZoneHeader({ title }) {
+function ZoneHeader({ title, children }) {
   return (
-    <div style={{ padding: "12px 20px 11px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", position: "sticky", top: 0, zIndex: 1 }}>
+    <div style={{ padding: "12px 20px 11px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", position: "sticky", top: 0, zIndex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
       <span style={{
         fontSize: 10, fontWeight: 700, letterSpacing: "0.12em",
         textTransform: "uppercase", color: "#64748b", fontFamily: FONTS.body,
       }}>{title}</span>
+      {children && <span style={{ display: "flex", alignItems: "center", gap: 6, margin: "-4px 0" }}>{children}</span>}
     </div>
   );
 }
@@ -2351,7 +2352,7 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
   onPendReasonChange, onPendDetailsChange, onPendSubmit,
   onDenyNoteChange, onDenySignoffSubmit,
   onCancelAction, onNavigate, hideQueueNav,
-  onHoldCase, onReleaseCase, onRationaleChange, canDecide, viewing, alignment, onNoteChange }) {
+  onHoldCase, onReleaseCase, onRationaleChange, canDecide, viewing, alignment, onNoteChange, noteText }) {
 
   const decided    = decisions[kase.caseId];
   const rec        = kase.contract?.recommendation;
@@ -2365,10 +2366,31 @@ function DeterminationZone({ kase, queue, cursor, total, decisions, auditState, 
   }, [actionState]);
 
   const decColor = decided ? detColors(decided.determination) : null;
+  const [copied, setCopied] = useState(false);
+  const copyNote = () => {
+    const text = noteText || "";
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {});
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+    }
+  };
+  const smallBtn = { padding: "2px 8px", borderRadius: 5, fontSize: 10, lineHeight: 1.3, fontWeight: 600, cursor: "pointer", fontFamily: FONTS.body, whiteSpace: "nowrap" };
 
   return (
     <div>
-      <ZoneHeader title="Review" />
+      <ZoneHeader title="Review">
+        {kase.contract && !!noteText && (
+          <button onClick={copyNote} style={{ ...smallBtn, background: "#fff", border: "1px solid #cbd5e1", color: "#334155" }}>{copied ? "Copied" : "Copy note"}</button>
+        )}
+        {onReleaseCase && (
+          <button onClick={onReleaseCase} style={{ ...smallBtn, background: "#fff", border: "1px solid #fca5a5", color: "#991b1b" }}>Return to queue</button>
+        )}
+      </ZoneHeader>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
 
         {/* Review note — the editable note. Always visible once
@@ -2976,6 +2998,41 @@ function SubmissionsPanel({ submissions, onClose, onForward, onRefresh }) {
 }
 
 // ── COCKPIT ROOT ───────────────────────────────────────────────────────────────
+// ── VISITS LINE ────────────────────────────────────────────────────────────────
+// Centered in the top bar: visits the provider is requesting and, on a subsequent request,
+// visits already approved earlier in the episode (cumulativeVisits from
+// GET /v1/episode-context: prior finalized submissions only, never this case). Context only.
+function VisitsStrip({ kase }) {
+  const isSubsequent = kase.reviewType === "subsequent" || kase.contract?.reviewType === "subsequent";
+  const requested = kase.requestedVisits ?? kase.contract?.extraction?.requestedVisits ?? null;
+  const [ep, setEp] = useState({ state: "idle", cumulative: null });
+  useEffect(() => {
+    setEp({ state: "idle", cumulative: null });
+    if (!isSubsequent || !kase.isLive || !kase.memberId || kase.memberId === "—" || !kase.discipline) return;
+    const token = localStorage.getItem("cogentus_token") || "";
+    if (!token) { setEp({ state: "error", cumulative: null }); return; }
+    let cancelled = false;
+    setEp({ state: "loading", cumulative: null });
+    fetch(`${API_BASE}/v1/episode-context?memberId=${encodeURIComponent(kase.memberId)}&discipline=${encodeURIComponent(kase.discipline)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error("bad")))
+      .then(d => { if (!cancelled) setEp({ state: "ok", cumulative: Number(d.cumulativeVisits) || 0 }); })
+      .catch(() => { if (!cancelled) setEp({ state: "error", cumulative: null }); });
+    return () => { cancelled = true; };
+  }, [isSubsequent, kase.isLive, kase.caseId, kase.memberId, kase.discipline]);
+
+  const lab = { fontSize: 11, color: "rgba(255,255,255,0.65)", fontFamily: FONTS.body };
+  const num = { fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.body };
+  const toDate = ep.state === "ok" ? ep.cumulative : null;
+  const reqText = requested != null ? `${requested} ${Number(requested) === 1 ? "visit" : "visits"}` : "not stated";
+  const dateText = ep.state === "loading" ? "…" : toDate != null ? `${toDate} ${toDate === 1 ? "visit" : "visits"}` : ep.state === "error" ? "could not load" : "none on file";
+  return (
+    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center", gap: "2px 22px", textAlign: "center" }}>
+      <span><span style={lab}>Requested by provider: </span><span style={num}>{reqText}</span></span>
+      {isSubsequent && <span><span style={lab}>Approved to date: </span><span style={num}>{dateText}</span></span>}
+    </div>
+  );
+}
+
 export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, onCaseDone, onHoldCase, onReleaseCase }) {
   // A member's other authorization opened from the timeline. Read only: it
   // replaces the case on screen but never the one the reviewer holds.
@@ -3350,30 +3407,17 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
       <div style={{
         minHeight: 52, background: NAVY,
         borderBottom: "1px solid rgba(255,255,255,0.1)",
-        display: "flex", alignItems: "center", flexWrap: "wrap",
+        display: "grid", gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)", alignItems: "center",
         padding: "6px 20px", gap: "6px 16px", flexShrink: 0,
         boxShadow: "0 1px 8px rgba(0,0,0,0.3)",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 16, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading, letterSpacing: "-0.02em" }}>CogentCR</span>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 10px", minWidth: 0 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", fontFamily: FONTS.heading }}>
             {kase.caseId}
           </span>
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", fontFamily: FONTS.body }}>
             {kase.memberName} · {disciplineLabel(kase.discipline, kase.reviewType)}
           </span>
-          {kase.isLive && !viewedCase && onReleaseCase && (
-            <button onClick={onReleaseCase} style={{
-              background: "rgba(255,255,255,0.08)", border: "1px solid rgba(252,165,165,0.7)",
-              borderRadius: 5, padding: "3px 10px", color: "#fecaca",
-              fontSize: 11, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600, whiteSpace: "nowrap",
-            }}>
-              Return to queue
-            </button>
-          )}
           {kase.receivedAt && (() => {
             const priority     = kase.reviewPriority || "standard";
             const hoursAllowed = priority === "urgent" ? 24 : priority === "expedited" ? 8 : 72;
@@ -3402,7 +3446,9 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
           )}
         </div>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+        <VisitsStrip kase={kase} />
+
+        <div style={{ justifySelf: "end", display: "flex", gap: 10, alignItems: "center" }}>
           {decidedCount > 0 && (
             <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", fontFamily: FONTS.body }}>
               {decidedCount}/{queue.length} decided
@@ -3436,11 +3482,6 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             showShortcuts
             canDecide={canDecide}
           />
-          {user && (
-            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: FONTS.body, borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: 12 }}>
-              {user.name || user.email}
-            </span>
-          )}
         </div>
       </div>
 
@@ -3524,6 +3565,7 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
             onRationaleChange={setRationaleEdit}
             alignment={alignment}
             onNoteChange={handleNoteChange}
+            noteText={noteState.caseId === kase.caseId ? noteState.text : ""}
           />
         </div>
       </div>

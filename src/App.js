@@ -1679,7 +1679,7 @@ function ProviderDirectoryView({ token }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EPISODE CONTEXT BAR (Phase 21)
 // ─────────────────────────────────────────────────────────────────────────────
-function EpisodeContextBar({ memberId, discipline, token, requestedVisits, reviewType }) {
+function EpisodeContextBar({ memberId, discipline, token }) {
   const [ctx, setCtx]         = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [expanded, setExpanded] = React.useState(false);
@@ -1694,26 +1694,12 @@ function EpisodeContextBar({ memberId, discipline, token, requestedVisits, revie
       .catch(() => setLoading(false));
   }, [memberId, discipline, token]); // eslint-disable-line
 
-  const requestedText = requestedVisits != null && requestedVisits !== "" ? `${requestedVisits} visit${Number(requestedVisits) === 1 ? "" : "s"}` : "not stated";
-  const requestedChip = (
-    <span style={{ fontSize: 12, color: "#374151" }}>
-      Requested by provider: <strong style={{ color: "#1a3a5c" }}>{requestedText}</strong>
-    </span>
-  );
-  if (loading) return null;
-  if (!ctx || !ctx.episode) {
-    return (
-      <div style={{ background: "#f0f9ff", borderBottom: "1px solid #bae6fd", fontFamily: "'Public Sans', sans-serif", flexShrink: 0, padding: "8px 20px" }}>
-        {requestedChip}
-      </div>
-    );
-  }
+  if (loading || !ctx || !ctx.episode) return null;
 
   const ep       = ctx.episode;
   const subs     = ctx.submissions || [];
   const cumVisits = ctx.cumulativeVisits || 0;
   const isSubseq  = subs.length > 1;
-  const showApproved = isSubseq || reviewType === "subsequent";
   const isConcurrent = subs.length > 1 && subs.some(s => s.status === "under_review" || s.status === "submitted");
 
   const detBg = (d) => {
@@ -1749,16 +1735,10 @@ function EpisodeContextBar({ memberId, discipline, token, requestedVisits, revie
         <span style={{ fontSize: 12, color: "#6b7280" }}>·</span>
         <span style={{ fontSize: 12, color: "#374151" }}>{subs.length} auth request{subs.length !== 1 ? "s" : ""} this episode</span>
         <span style={{ fontSize: 12, color: "#6b7280" }}>·</span>
-        {requestedChip}
-        {showApproved && (
-          <>
-            <span style={{ fontSize: 12, color: "#6b7280" }}>·</span>
-            <span style={{ fontSize: 12 }}>
-              <span style={{ color: "#374151" }}>Approved to date: </span>
-              <strong style={{ color: "#1a3a5c" }}>{cumVisits} visit{cumVisits === 1 ? "" : "s"}</strong>
-            </span>
-          </>
-        )}
+        <span style={{ fontSize: 12 }}>
+          <strong style={{ color: cumVisits > 0 ? "#1a3a5c" : "#9ca3af" }}>{cumVisits}</strong>
+          <span style={{ color: "#6b7280" }}> visits authorized to date</span>
+        </span>
         {isSubseq && (
           <button
             onClick={() => setExpanded(e => !e)}
@@ -3271,7 +3251,7 @@ function ReviewerShell({ user, token, onLogout }) {
       {/* Cockpit — kept mounted while case is active; hidden when on another tab */}
       {assignedCase && (
         <div style={{ display: cockpitVisible ? "flex" : "none", flex: 1, flexDirection: "column", overflow: "hidden" }}>
-          <EpisodeContextBar memberId={assignedCase.memberId} discipline={assignedCase.discipline} token={token} requestedVisits={assignedCase.requestedVisits} reviewType={assignedCase.reviewType} />
+          <EpisodeContextBar memberId={assignedCase.memberId} discipline={assignedCase.discipline} token={token} />
           {/* Demo cleanup — plan-rules strip (StateRulesBar) removed from the cockpit
               route. Not shared with any other view (this was its only render call),
               so the component definition itself is left intact rather than deleted —
