@@ -7736,6 +7736,145 @@ function AutoApprovalAuditsView({ token, role }) {
   );
 }
 
+function OpsMetricsView({ token }) {
+  const [data, setData] = React.useState(null);
+  const [drift, setDrift] = React.useState(null);
+  const [err, setErr] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const load = React.useCallback(() => {
+    setErr("");
+    axios.get(`${API_BASE}/v1/metrics/decisions`, { headers }).then(r => setData(r.data)).catch(e => setErr(e.response?.data?.error || "Could not load metrics."));
+    axios.get(`${API_BASE}/v1/drift`, { headers }).then(r => setDrift(r.data)).catch(() => setDrift({ runs: [], openFlags: [] }));
+  }, [token]); // eslint-disable-line
+  React.useEffect(() => { load(); }, [load]);
+
+  const runNow = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      await axios.post(`${API_BASE}/v1/drift/run`, {}, { headers });
+      setMsg("Drift comparison completed.");
+      load();
+    } catch (e) { setErr(e.response?.data?.error || "Drift run failed."); }
+    setBusy(false);
+  };
+  const ack = async (flagId) => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      await axios.post(`${API_BASE}/v1/drift/flags/${flagId}/ack`, {}, { headers });
+      load();
+    } catch (e) { setErr(e.response?.data?.error || "Could not acknowledge flag."); }
+    setBusy(false);
+  };
+
+  const card = { background: "#fff", borderRadius: 10, border: "1px solid #e2e8f0", padding: "16px 20px", marginBottom: 18 };
+  const th = { textAlign: "left", fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em", padding: "6px 10px", borderBottom: "1px solid #e2e8f0", whiteSpace: "nowrap" };
+  const td = { fontSize: 12, color: "#1e293b", padding: "8px 10px", borderBottom: "1px solid #f1f5f9", whiteSpace: "nowrap" };
+  const pct = (v) => (v == null ? "—" : `${v}%`);
+  const flagText = (f) => {
+    const d = f.detail || {};
+    const sign = d.deltaPp > 0 ? "+" : "";
+    return d.kind === "lane_mix" || f.kind === "lane_mix"
+      ? `Lane mix: ${d.lane} moved ${sign}${d.deltaPp} pp (${d.baseline}% to ${d.current}%)`
+      : `Reviewer agreement moved ${sign}${d.deltaPp} pp (${d.baseline}% to ${d.current}%)`;
+  };
+
+  return (
+    <div style={{ maxWidth: 1060, margin: "0 auto", padding: "28px 24px" }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: "#1e293b", fontFamily: "'Fraunces', Georgia, serif", marginBottom: 4 }}>Decision metrics and drift</div>
+      <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 18 }}>
+        Reporting only. Nothing on this page changes a case or an auto-approval mode.
+      </div>
+      {err && <div style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, fontSize: 12, marginBottom: 12 }}>{err}</div>}
+      {msg && <div style={{ background: "#f0fdf4", color: "#166534", padding: "8px 12px", borderRadius: 8, fontSize: 12, marginBottom: 12 }}>{msg}</div>}
+
+      <div style={card}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b", marginBottom: 10 }}>Outcomes by pack and month of receipt</div>
+        {!data ? <div style={{ color: "#9ca3af", fontSize: 12 }}>Loading…</div> : data.metrics.length === 0 ? (
+          <div style={{ color: "#6b7280", fontSize: 12 }}>No cases in this period.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr>
+                {["Pack", "Month", "Cases", "Decided", "Approved", "Denied", "Appealed", "Overturned", "Within window"].map(h => <th key={h} style={th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {data.metrics.map(m => (
+                  <tr key={`${m.packId}|${m.month}`}>
+                    <td style={td}>{m.packId}</td><td style={td}>{m.month}</td>
+                    <td style={td}>{m.total}</td><td style={td}>{m.decided}</td>
+                    <td style={td}>{pct(m.pctApproved)}</td><td style={td}>{pct(m.pctDenied)}</td>
+                    <td style={td}>{pct(m.pctAppealed)}</td><td style={td}>{pct(m.pctOverturned)}</td>
+                    <td style={td}>{pct(m.pctWithinWindow)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {data && (
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 12, lineHeight: 1.6 }}>
+            <div><b>Approved / Denied:</b> {data.definitions.approved} {data.definitions.denied}</div>
+            <div><b>Appealed:</b> {data.definitions.appealed}</div>
+            <div><b>Overturned:</b> {data.definitions.overturned}</div>
+            <div><b>Within window:</b> {data.definitions.withinWindow}</div>
+            <div>A dash means there were no cases to divide by. Grouping: {data.definitions.grouping}</div>
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b", flex: 1 }}>Weekly drift</div>
+          <button disabled={busy} onClick={runNow} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", cursor: busy ? "default" : "pointer" }}>Run now</button>
+        </div>
+        <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>
+          Compares the last 7 days of reviewer agreement and lane mix with the prior four weeks, per pack. Packs with too few cases are shown as insufficient data.
+        </div>
+        {!drift ? <div style={{ color: "#9ca3af", fontSize: 12 }}>Loading…</div> : (
+          <>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", marginBottom: 6 }}>Open flags</div>
+            {drift.openFlags.length === 0 ? <div style={{ color: "#6b7280", fontSize: 12, marginBottom: 12 }}>No open flags.</div> : (
+              <div style={{ marginBottom: 12 }}>
+                {drift.openFlags.map(f => (
+                  <div key={f.flag_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #f1f5f9" }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#92400e", background: "#fffbeb", borderRadius: 6, padding: "2px 8px" }}>{f.pack_id}</span>
+                    <span style={{ fontSize: 12, color: "#1e293b", flex: 1 }}>{flagText(f)}</span>
+                    <span style={{ fontSize: 11, color: "#9ca3af" }}>{new Date(f.created_at).toLocaleDateString()}</span>
+                    <button disabled={busy} onClick={() => ack(f.flag_id)} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}>Acknowledge</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", marginBottom: 6 }}>Recent runs</div>
+            {drift.runs.length === 0 ? <div style={{ color: "#6b7280", fontSize: 12 }}>No runs yet. The scheduler runs weekly, or use Run now.</div> : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr>{["Ran", "Threshold", "Min cases", "Packs"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {drift.runs.map(r => (
+                      <tr key={r.run_id}>
+                        <td style={td}>{new Date(r.created_at).toLocaleString()}</td>
+                        <td style={td}>{r.threshold_pp} pp</td>
+                        <td style={td}>{r.min_samples}</td>
+                        <td style={{ ...td, whiteSpace: "normal" }}>
+                          {(Array.isArray(r.summary) ? r.summary : []).map(p => `${p.packId}: ${p.status === "insufficient_data" ? "insufficient data" : p.status}`).join("; ") || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MasterShell({ user, token, onLogout }) {
   const [masterView, setMasterView] = useState("dashboard");
   const [cockpitCase, setCockpitCase] = useState(null); // set from case rows to open cockpit
@@ -7771,6 +7910,7 @@ function MasterShell({ user, token, onLogout }) {
     ["integrations", "Integrations"],
     ["audit",        "Audit"],
     ["auto_approval", "Auto-approval"],
+    ["ops_metrics", "Metrics"],
     ["ur_form",      "UR Form"],
   ];
 
@@ -7817,6 +7957,7 @@ function MasterShell({ user, token, onLogout }) {
       {masterView === "users"        && <UserManagementView token={token} />}
       {masterView === "audit"        && <AuditExportView token={token} />}
       {masterView === "auto_approval" && <AutoApprovalView token={token} />}
+      {masterView === "ops_metrics"  && <OpsMetricsView token={token} />}
     </div>
   );
 }
