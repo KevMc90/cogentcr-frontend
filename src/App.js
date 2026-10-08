@@ -2735,6 +2735,8 @@ function ReviewerShell({ user, token, onLogout }) {
   const [getCaseLoading, setGetCaseLoading] = useState(false);
   const [getCaseError, setGetCaseError]     = useState("");
   const [toolsOpen, setToolsOpen]           = useState(false);
+  const [casesCollapsed, setCasesCollapsed] = useState(() => { try { return localStorage.getItem("cogentcr.activeCasesCollapsed") === "1"; } catch (e) { return false; } });
+  const toggleCasesCollapsed = () => setCasesCollapsed(c => { const n = !c; try { localStorage.setItem("cogentcr.activeCasesCollapsed", n ? "1" : "0"); } catch (e) {} return n; });
   const [exitModal, setExitModal]           = useState(false); // "hold"|"release"|false
   const [exitReason, setExitReason]         = useState("");
   const [exitLoading, setExitLoading]       = useState(false);
@@ -3301,7 +3303,11 @@ function ReviewerShell({ user, token, onLogout }) {
             <div style={{ background: "#fff", borderRadius: 12, boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0", overflow: "hidden" }}>
               <div style={{ padding: "14px 20px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                 <div>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1a3a5c", fontFamily: "'Fraunces', Georgia, serif" }}>Your active cases</span>
+                  <button onClick={toggleCasesCollapsed} aria-expanded={!casesCollapsed} title={casesCollapsed ? "Show your active cases" : "Hide your active cases"}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 700, color: "#1a3a5c", fontFamily: "'Fraunces', Georgia, serif" }}>
+                    <span aria-hidden="true" style={{ display: "inline-block", fontSize: 10, transition: "transform 0.15s", transform: casesCollapsed ? "rotate(-90deg)" : "none" }}>▼</span>
+                    Your active cases
+                  </button>
                   <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8, fontFamily: "'Public Sans', sans-serif" }}>
                     {myCasesLoading ? "Loading…" : `${myCases.length} assigned to you`}
                   </span>
@@ -3319,6 +3325,7 @@ function ReviewerShell({ user, token, onLogout }) {
                   </button>
                 </div>
               </div>
+              {!casesCollapsed && (<>
               {batchNotice && (
                 <div style={{ padding: "8px 20px", fontSize: 12, color: "#15803d", background: "#f0fdf4", borderBottom: "1px solid #dcfce7", fontFamily: "'Public Sans', sans-serif", display: "flex", justifyContent: "space-between", gap: 12 }}>
                   <span>{batchNotice}</span>
@@ -3400,6 +3407,7 @@ function ReviewerShell({ user, token, onLogout }) {
                   })}
                 </>
               )}
+              </>)}
             </div>
           </div>
         )}
