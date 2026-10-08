@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
+import { ReadinessChecklist, AssistantChat } from "./components/ProviderAssist";
 import Cockpit from "./components/Cockpit";
+import ReviewerScheduling from "./components/ReviewerScheduling";
 import { parseRequestedFreqWeeks, formatVisitLine } from "./utils/visitComparison";
 import { buildUNFNote } from "./utils/unfNote";
 
@@ -3029,6 +3031,7 @@ function ReviewerShell({ user, token, onLogout }) {
     { key: "criteria", label: "Criteria Library", group: "tools" },
     { key: "state_rules", label: "State Rules", group: "tools" },
     { key: "audit_tasks", label: "Auto-approval Audits", group: "tools" },
+    { key: "p2p_availability", label: "P2P Availability & Call-backs", group: "tools" },
   ];
 
   const NavBar = () => (
@@ -3391,6 +3394,7 @@ function ReviewerShell({ user, token, onLogout }) {
         {revView === "appeals"     && <AppealsQueueView token={token} />}
         {revView === "criteria"    && <CriteriaLibraryView token={token} />}
         {revView === "state_rules" && <StateRulesView token={token} />}
+        {revView === "p2p_availability" && <ReviewerScheduling token={token} />}
         {revView === "audit_tasks" && <AutoApprovalAuditsView token={token} role={user.role} />}
         {revView === "ur_form"     && <URFormEmbed user={user} token={token} />}
 
@@ -4386,6 +4390,8 @@ function NewSubmissionForm({ token, onSubmitted, clinicProfile, prefill, onCance
             feedback instead of a round-trip error — except when documents are
             attached, where extraction can supply the code and the server
             validates after extracting. Mirrors the backend's own split. */}
+        <ReadinessChecklist token={token} input={{ providerName, providerNpi, memberName, memberId, dob, discipline, diagnosisCodes, requestedVisits: parseInt(requestedVisits) || 0, documents: [...docList, ...uploadedFiles.map(f => f.name)] }} />
+
         {needsDiagnosis && (
           <div style={{ marginBottom: 12, padding: "10px 14px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 7, fontSize: 12, color: "#92400e", fontFamily: "'Public Sans', sans-serif" }}>
             At least one ICD-10 diagnosis code is required — add one above, or attach clinical documentation that states one.
@@ -6174,7 +6180,7 @@ function ProviderPortal({ user, token, onLogout }) {
 
   const TABS = (
     <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 28px", display: "flex", gap: 0 }}>
-      {[["dashboard","Dashboard"], ["new_submission","New Auth"], ["my_cases","My Cases"], ["settings","Settings"]].map(([v, label]) => (
+      {[["dashboard","Dashboard"], ["new_submission","New Auth"], ["my_cases","My Cases"], ["assistant","Assistant"], ["settings","Settings"]].map(([v, label]) => (
         <button key={v} onClick={() => goToView(v)} style={{
           padding: "12px 20px", fontSize: 13, fontWeight: provView === v ? 700 : 500,
           color: provView === v ? "#1a3a5c" : "#6b7280", background: "none", border: "none",
@@ -6295,6 +6301,7 @@ function ProviderPortal({ user, token, onLogout }) {
       {provView === "dashboard"      && <ProviderDashboard token={token} clinicProfile={clinicProfile} onNewAuth={() => setProvView("new_submission")} onViewCases={v => setProvView(v)} onOpenCase={handleNavigateToCase} />}
       {provView === "new_submission" && <NewSubmissionForm key={prefillParent?.submission_id || "blank"} token={token} clinicProfile={clinicProfile} onSubmitted={handleSubmitted} prefill={prefillParent} onCancelPrefill={() => setPrefillParent(null)} />}
       {provView === "my_cases"       && <MyCasesView token={token} deepLinkCaseId={deepLinkCaseId} onDeepLinkConsumed={() => setDeepLinkCaseId(null)} onRequestMoreVisits={handleRequestMoreVisits} />}
+      {provView === "assistant"      && <AssistantChat token={token} />}
       {provView === "settings"       && <ClinicSettingsView token={token} profile={clinicProfile} onSaved={p => setClinicProfile(p)} />}
     </div>
   );
