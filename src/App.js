@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
-import { ReadinessChecklist, AssistantChat } from "./components/ProviderAssist";
+import { ReadinessChecklist } from "./components/ProviderAssist";
+import { CogentChat, CogentWidget } from "./components/Cogent";
 import Cockpit from "./components/Cockpit";
 import ReviewerScheduling from "./components/ReviewerScheduling";
 import { parseRequestedFreqWeeks, formatVisitLine } from "./utils/visitComparison";
@@ -3412,6 +3413,7 @@ function ReviewerShell({ user, token, onLogout }) {
         {revView === "p2p_availability" && <ReviewerScheduling token={token} />}
         {revView === "audit_tasks" && <AutoApprovalAuditsView token={token} role={user.role} />}
         {revView === "ur_form"     && <URFormEmbed user={user} token={token} />}
+        <CogentWidget token={token} role={user.role} hidden={revView === "cockpit"} onNavigate={v => setRevView(v)} />
 
       </div>
     </div>
@@ -6214,7 +6216,7 @@ function ProviderPortal({ user, token, onLogout }) {
 
   const TABS = (
     <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 28px", display: "flex", gap: 0 }}>
-      {[["dashboard","Dashboard"], ["new_submission","New Auth"], ["my_cases","My Cases"], ["assistant","Assistant"], ["settings","Settings"]].map(([v, label]) => (
+      {[["dashboard","Dashboard"], ["new_submission","New Auth"], ["my_cases","My Cases"], ["assistant","Cogent"], ["settings","Settings"]].map(([v, label]) => (
         <button key={v} onClick={() => goToView(v)} style={{
           padding: "12px 20px", fontSize: 13, fontWeight: provView === v ? 700 : 500,
           color: provView === v ? "#1a3a5c" : "#6b7280", background: "none", border: "none",
@@ -6335,7 +6337,8 @@ function ProviderPortal({ user, token, onLogout }) {
       {provView === "dashboard"      && <ProviderDashboard token={token} clinicProfile={clinicProfile} onNewAuth={() => setProvView("new_submission")} onViewCases={v => setProvView(v)} onOpenCase={handleNavigateToCase} />}
       {provView === "new_submission" && <NewSubmissionForm key={prefillParent?.submission_id || "blank"} token={token} clinicProfile={clinicProfile} onSubmitted={handleSubmitted} prefill={prefillParent} onCancelPrefill={() => setPrefillParent(null)} />}
       {provView === "my_cases"       && <MyCasesView token={token} deepLinkCaseId={deepLinkCaseId} onDeepLinkConsumed={() => setDeepLinkCaseId(null)} onRequestMoreVisits={handleRequestMoreVisits} />}
-      {provView === "assistant"      && <AssistantChat token={token} />}
+      {provView === "assistant"      && <CogentChat token={token} role="provider" inline onNavigate={v => goToView(v)} />}
+      <CogentWidget token={token} role="provider" hidden={provView === "assistant"} onNavigate={v => goToView(v)} />
       {provView === "settings"       && <ClinicSettingsView token={token} profile={clinicProfile} onSaved={p => setClinicProfile(p)} />}
     </div>
   );
@@ -7992,6 +7995,7 @@ function MasterShell({ user, token, onLogout }) {
       {masterView === "audit"        && <AuditExportView token={token} />}
       {masterView === "auto_approval" && <AutoApprovalView token={token} />}
       {masterView === "ops_metrics"  && <OpsMetricsView token={token} />}
+      <CogentWidget token={token} role="master" onNavigate={v => setMasterView(v)} />
     </div>
   );
 }
@@ -8433,6 +8437,7 @@ function MDShell({ user, token, onLogout }) {
           )}
         </div>
       </div>}
+      <CogentWidget token={token} role="medical_director" onNavigate={v => setMdTab(v)} />
     </div>
   );
 }
