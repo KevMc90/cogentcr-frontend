@@ -2999,34 +2999,18 @@ export function VisitsStrip({ kase }) {
     return () => { cancelled = true; };
   }, [isSubsequent, kase.isLive, kase.caseId, kase.memberId, kase.discipline]);
 
-  const label = { fontSize: 10, fontWeight: 800, letterSpacing: "0.09em", textTransform: "uppercase", fontFamily: FONTS.body };
-  const big = { fontSize: 26, fontWeight: 800, lineHeight: 1, fontFamily: FONTS.heading };
-  const unit = { fontSize: 12, fontWeight: 600, fontFamily: FONTS.body, marginLeft: 6 };
-  const tile = (bg, border) => ({ display: "flex", alignItems: "baseline", gap: 10, padding: "6px 16px", borderRadius: 8, background: bg, border: `1px solid ${border}` });
+  const lab = { fontSize: 11, color: "#64748b", fontFamily: FONTS.body };
+  const num = { fontSize: 13, fontWeight: 700, color: NAVY, fontFamily: FONTS.body };
   const toDate = ep.state === "ok" ? ep.cumulative : null;
+  const reqText = requested != null ? `${requested} ${Number(requested) === 1 ? "visit" : "visits"}` : "not stated";
+  const dateText = ep.state === "loading" ? "…" : toDate != null ? `${toDate} ${toDate === 1 ? "visit" : "visits"}` : ep.state === "error" ? "could not load" : "none on file";
   return (
-    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 12px", padding: "8px 20px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", flexShrink: 0 }}>
-      <div style={tile("#fffbeb", "#fcd34d")}>
-        <span style={{ ...label, color: "#92400e" }}>Requested by provider</span>
-        <span style={{ ...big, color: "#78350f" }}>{requested != null ? requested : "—"}<span style={{ ...unit, color: "#92400e" }}>{requested != null ? (Number(requested) === 1 ? "visit" : "visits") : "not stated"}</span></span>
-      </div>
-      {isSubsequent && (
-        <div style={tile("#eff6ff", "#93c5fd")}>
-          <span style={{ ...label, color: "#1e40af" }}>Approved to date</span>
-          <span style={{ ...big, color: "#1e3a8a" }}>
-            {ep.state === "loading" ? "…" : toDate != null ? toDate : "—"}
-            <span style={{ ...unit, color: "#1e40af" }}>
-              {ep.state === "loading" ? "loading" : toDate != null ? (toDate === 1 ? "visit" : "visits") : ep.state === "error" ? "could not load" : "none on file"}
-            </span>
-          </span>
-        </div>
-      )}
+    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 18px", padding: "7px 20px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+      <span><span style={lab}>Requested by provider: </span><span style={num}>{reqText}</span></span>
+      {isSubsequent && <span><span style={lab}>Approved to date: </span><span style={num}>{dateText}</span></span>}
       {isSubsequent && toDate != null && requested != null && (
-        <span style={{ fontSize: 12, color: "#475569", fontFamily: FONTS.body }}>
-          If all requested visits are approved, the episode total would be <strong>{toDate + Number(requested)}</strong>.
-        </span>
+        <span style={lab}>Total if approved in full: <span style={num}>{toDate + Number(requested)}</span></span>
       )}
-      {!isSubsequent && <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: FONTS.body }}>Initial request: no prior approvals.</span>}
     </div>
   );
 }
@@ -3499,8 +3483,6 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
         </div>
       </div>
 
-      <VisitsStrip kase={kase} />
-
       {/* ── Three zones: member history | this request's evidence | decision.
           The AI suggestion is a one-line strip above the evidence, not a panel. ── */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 1, overflow: "hidden" }}>
@@ -3540,6 +3522,7 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
               </button>
             </div>
           )}
+          <VisitsStrip kase={kase} />
           <RecommendationStrip kase={kase} engineState={engineState} selectedPlan={selectedPlan} />
           <EvidenceZone
             kase={kase}

@@ -6,7 +6,7 @@ import { VisitsStrip } from "./Cockpit";
 test("initial request shows requested visits and no approved-to-date tile", () => {
   const html = renderToStaticMarkup(<VisitsStrip kase={{ reviewType: "initial", requestedVisits: 12 }} />);
   expect(html).toContain("Requested by provider");
-  expect(html).toContain("12");
+  expect(html).toContain("12 visits");
   expect(html).not.toContain("Approved to date");
 });
 
@@ -23,5 +23,5 @@ test("missing requested count reads 'not stated' rather than a number", () => {
 
 test("falls back to the extracted requested visits", () => {
   const html = renderToStaticMarkup(<VisitsStrip kase={{ reviewType: "initial", contract: { extraction: { requestedVisits: 9 } } }} />);
-  expect(html).toContain(">9<");
+  expect(html).toContain("9 visits");
 });
