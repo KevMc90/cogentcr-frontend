@@ -2976,6 +2976,61 @@ function SubmissionsPanel({ submissions, onClose, onForward, onRefresh }) {
 }
 
 // ── COCKPIT ROOT ───────────────────────────────────────────────────────────────
+// ── VISITS STRIP ───────────────────────────────────────────────────────────────
+// Always visible under the top bar: how many visits the provider is asking for and,
+// on a subsequent request, how many were already approved earlier in the episode
+// (the same cumulativeVisits GET /v1/episode-context reports; prior finalized
+// submissions only, never this case). The decision is the reviewer's; this is context.
+export function VisitsStrip({ kase }) {
+  const isSubsequent = kase.reviewType === "subsequent" || kase.contract?.reviewType === "subsequent";
+  const requested = kase.requestedVisits ?? kase.contract?.extraction?.requestedVisits ?? null;
+  const [ep, setEp] = useState({ state: "idle", cumulative: null });
+  useEffect(() => {
+    setEp({ state: "idle", cumulative: null });
+    if (!isSubsequent || !kase.isLive || !kase.memberId || kase.memberId === "—" || !kase.discipline) return;
+    const token = localStorage.getItem("cogentus_token") || "";
+    if (!token) { setEp({ state: "error", cumulative: null }); return; }
+    let cancelled = false;
+    setEp({ state: "loading", cumulative: null });
+    fetch(`${API_BASE}/v1/episode-context?memberId=${encodeURIComponent(kase.memberId)}&discipline=${encodeURIComponent(kase.discipline)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error("bad")))
+      .then(d => { if (!cancelled) setEp({ state: "ok", cumulative: Number(d.cumulativeVisits) || 0 }); })
+      .catch(() => { if (!cancelled) setEp({ state: "error", cumulative: null }); });
+    return () => { cancelled = true; };
+  }, [isSubsequent, kase.isLive, kase.caseId, kase.memberId, kase.discipline]);
+
+  const label = { fontSize: 10, fontWeight: 800, letterSpacing: "0.09em", textTransform: "uppercase", fontFamily: FONTS.body };
+  const big = { fontSize: 26, fontWeight: 800, lineHeight: 1, fontFamily: FONTS.heading };
+  const unit = { fontSize: 12, fontWeight: 600, fontFamily: FONTS.body, marginLeft: 6 };
+  const tile = (bg, border) => ({ display: "flex", alignItems: "baseline", gap: 10, padding: "6px 16px", borderRadius: 8, background: bg, border: `1px solid ${border}` });
+  const toDate = ep.state === "ok" ? ep.cumulative : null;
+  return (
+    <div role="group" aria-label="Visits requested and approved to date" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 12px", padding: "8px 20px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", flexShrink: 0 }}>
+      <div style={tile("#fffbeb", "#fcd34d")}>
+        <span style={{ ...label, color: "#92400e" }}>Requested by provider</span>
+        <span style={{ ...big, color: "#78350f" }}>{requested != null ? requested : "—"}<span style={{ ...unit, color: "#92400e" }}>{requested != null ? (Number(requested) === 1 ? "visit" : "visits") : "not stated"}</span></span>
+      </div>
+      {isSubsequent && (
+        <div style={tile("#eff6ff", "#93c5fd")}>
+          <span style={{ ...label, color: "#1e40af" }}>Approved to date</span>
+          <span style={{ ...big, color: "#1e3a8a" }}>
+            {ep.state === "loading" ? "…" : toDate != null ? toDate : "—"}
+            <span style={{ ...unit, color: "#1e40af" }}>
+              {ep.state === "loading" ? "loading" : toDate != null ? (toDate === 1 ? "visit" : "visits") : ep.state === "error" ? "could not load" : "none on file"}
+            </span>
+          </span>
+        </div>
+      )}
+      {isSubsequent && toDate != null && requested != null && (
+        <span style={{ fontSize: 12, color: "#475569", fontFamily: FONTS.body }}>
+          If all requested visits are approved, the episode total would be <strong>{toDate + Number(requested)}</strong>.
+        </span>
+      )}
+      {!isSubsequent && <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: FONTS.body }}>Initial request: no prior approvals.</span>}
+    </div>
+  );
+}
+
 export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, onCaseDone, onHoldCase, onReleaseCase }) {
   // A member's other authorization opened from the timeline. Read only: it
   // replaces the case on screen but never the one the reviewer holds.
@@ -3443,6 +3498,8 @@ export default function Cockpit({ user, liveCase: assignedCase, hideQueueNav, on
           )}
         </div>
       </div>
+
+      <VisitsStrip kase={kase} />
 
       {/* ── Three zones: member history | this request's evidence | decision.
           The AI suggestion is a one-line strip above the evidence, not a panel. ── */}
