@@ -3,6 +3,7 @@ import { parseRequestedFreqWeeks, formatVisitLine } from "../utils/visitComparis
 import { buildUNFNote } from "../utils/unfNote";
 import MemberTimeline from "./MemberTimeline";
 import { submissionToCockpitCase } from "../utils/cockpitCase";
+import { evidenceViewFor, evidenceSummaryLine } from "../utils/evidenceView";
 
 const API_BASE =
   process.env.REACT_APP_API_BASE ||
@@ -1038,6 +1039,172 @@ function ProgressComparison({ kase }) {
   );
 }
 
+// ── PACK EVIDENCE (non-therapy lines of business) ──────────────────────────────
+// Presentational. The evidence description comes from the backend
+// (GET /v1/submissions/:id/pack-evidence) and is driven by the pack's
+// extractionFields and requiredDocuments. A missing value reads "Not on file":
+// it was not captured at intake, which is not the same as the model failing.
+export function PackEvidenceBody({ kase, evidence, status, onToggleDocs, showDocs }) {
+  const summary = evidenceSummaryLine(evidence);
+  const review = kase.reviewType === "subsequent" ? "Subsequent review" : "Initial review";
+  const sectionLabel = {
+    fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase",
+    letterSpacing: "0.07em", fontFamily: FONTS.body, marginBottom: 6,
+  };
+  const diagCodes = kase.diagnosisCodes || [];
+  const submitted = kase.documents || [];
+
+  return (
+    <div>
+      <ZoneHeader title="Clinical Evidence" />
+      <div style={{ padding: "16px 20px" }}>
+
+        <div style={{ marginBottom: 16, paddingBottom: 14, borderBottom: "1px solid #f1f5f9" }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: NAVY, fontFamily: FONTS.heading, lineHeight: 1.2 }}>
+            {kase.memberName}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>DOB {kase.dob}</span>
+            <span style={{ fontSize: 11, color: "#cbd5e1" }}>·</span>
+            <span style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>{kase.memberId}</span>
+            <span style={{ fontSize: 11, color: "#cbd5e1" }}>·</span>
+            <span style={{ fontSize: 11, color: "#64748b", fontFamily: FONTS.body }}>{kase.discipline} · {review}</span>
+          </div>
+          {diagCodes.length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: NAVY, fontFamily: "monospace" }}>
+              {diagCodes.join(", ")}
+            </div>
+          )}
+          {evidence && evidence.pack && (
+            <div style={{ marginTop: 8 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+                background: "#eff6ff", color: NAVY_MID, border: "1px solid #bfdbfe",
+                fontFamily: FONTS.body, textTransform: "uppercase", letterSpacing: "0.06em",
+              }}>{evidence.pack.name}{evidence.pack.version ? ` · v${evidence.pack.version}` : ""}</span>
+            </div>
+          )}
+        </div>
+
+        {status === "loading" && <LoadingPulse label="Loading evidence..." />}
+
+        {status !== "loading" && !evidence && (
+          <div style={{ padding: "10px 14px", borderRadius: 8, border: "1.5px dashed #c7d2fe", background: "#eef2ff", marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#4338ca", fontFamily: FONTS.body, marginBottom: 2 }}>
+              {status === "error" ? "Evidence could not be loaded" : "No evidence layout for this service"}
+            </div>
+            <div style={{ fontSize: 10, color: "#6366f1", fontFamily: FONTS.body, lineHeight: 1.5 }}>
+              Review the submitted documents directly.
+            </div>
+          </div>
+        )}
+
+        {evidence && (
+          <>
+            <div style={{
+              padding: "8px 12px", borderRadius: 7, marginBottom: 14,
+              border: `1px solid ${evidence.summary.documentsMissing > 0 ? "#fcd34d" : "#e2e8f0"}`,
+              background: evidence.summary.documentsMissing > 0 ? "#fffbeb" : "#f8fafc",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", fontFamily: FONTS.body }}>{summary}</div>
+              <div style={{ fontSize: 10, color: "#64748b", fontFamily: FONTS.body, lineHeight: 1.5, marginTop: 2 }}>
+                "Not on file" means the value was not captured at intake. Check the submitted documents before relying on it.
+              </div>
+            </div>
+
+            {evidence.groups.map(group => (
+              <div key={group.title} style={{ marginBottom: 14 }}>
+                <div style={sectionLabel}>{group.title}</div>
+                <div style={{ borderRadius: 7, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+                  {group.fields.map((f, i) => (
+                    <div key={f.key} style={{
+                      display: "flex", gap: 8, padding: "7px 12px",
+                      background: i % 2 === 0 ? "#f8fafc" : "#fff",
+                      borderBottom: i < group.fields.length - 1 ? "1px solid #f1f5f9" : "none",
+                    }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#475569", fontFamily: FONTS.body, flex: "0 0 46%", paddingTop: 1 }}>{f.label}</span>
+                      {f.present ? (
+                        <span style={{ fontSize: 12, color: "#1e293b", fontFamily: FONTS.body, lineHeight: 1.5, wordBreak: "break-word" }}>{f.value}</span>
+                      ) : (
+                        <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: FONTS.body, fontStyle: "italic" }}>Not on file</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={sectionLabel}>Required documents</div>
+              <div style={{ borderRadius: 7, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+                {evidence.documents.map((d, i) => (
+                  <div key={d.type} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px",
+                    background: i % 2 === 0 ? "#f8fafc" : "#fff",
+                    borderBottom: i < evidence.documents.length - 1 ? "1px solid #f1f5f9" : "none",
+                  }}>
+                    <span style={{ fontSize: 11, color: "#1e293b", fontFamily: FONTS.body }}>
+                      {d.label}{d.optional ? " (if any)" : ""}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, fontFamily: FONTS.body, flexShrink: 0,
+                      color: d.present ? "#15803d" : d.optional ? "#94a3b8" : "#b45309",
+                    }}>{d.present ? "✓ On file" : "Not on file"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {kase.providerNotes && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={sectionLabel}>Provider notes</div>
+            <div style={{ fontSize: 11, color: "#1e293b", fontFamily: FONTS.body, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{kase.providerNotes}</div>
+          </div>
+        )}
+
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ ...sectionLabel, marginBottom: 0 }}>Submitted documents</div>
+            {onToggleDocs && submitted.length > 0 && (
+              <button onClick={onToggleDocs} style={{ fontSize: 10, color: NAVY, background: "none", border: "none", cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600, padding: 0 }}>
+                {showDocs ? "Hide viewer" : "Full viewer ↗"}
+              </button>
+            )}
+          </div>
+          {submitted.length > 0 ? submitted.map((d, i) => (
+            <div key={i} style={{ fontSize: 11, color: "#374151", fontFamily: FONTS.body, padding: "2px 0" }}>
+              · {typeof d === "string" ? d : d.name || "Unnamed document"}
+            </div>
+          )) : (
+            <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: FONTS.body, fontStyle: "italic" }}>No documents listed</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function PackEvidenceView({ kase, onToggleDocs, showDocs }) {
+  const [state, setState] = React.useState({ status: "loading", evidence: null });
+  const realId = kase.submissionId || kase.caseId;
+
+  React.useEffect(() => {
+    const token = localStorage.getItem("cogentus_token") || "";
+    if (!realId || realId.startsWith("SYNTH") || !token) { setState({ status: "ready", evidence: null }); return undefined; }
+    let alive = true;
+    setState({ status: "loading", evidence: null });
+    fetch(`${API_BASE}/v1/submissions/${realId}/pack-evidence`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(data => { if (alive) setState({ status: "ready", evidence: data.evidence || null }); })
+      .catch(() => { if (alive) setState({ status: "error", evidence: null }); });
+    return () => { alive = false; };
+  }, [realId]);
+
+  return <PackEvidenceBody kase={kase} evidence={state.evidence} status={state.status} onToggleDocs={onToggleDocs} showDocs={showDocs} />;
+}
+
 function EvidenceZone({ kase, onToggleDocs, showDocs }) {
   const [inlineDocs, setInlineDocs]       = React.useState(kase.documents || []);
   const [inlineDocsReady, setInlineDo]    = React.useState(false);
@@ -1055,6 +1222,10 @@ function EvidenceZone({ kase, onToggleDocs, showDocs }) {
       .catch(() => {})
       .finally(() => setInlineDo(true));
   }, [kase.caseId]); // eslint-disable-line
+
+  if (evidenceViewFor(kase) === "pack") {
+    return <PackEvidenceView kase={kase} onToggleDocs={onToggleDocs} showDocs={showDocs} />;
+  }
 
   if (!kase.contract) {
     return (
